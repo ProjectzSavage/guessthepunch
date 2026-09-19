@@ -1,0 +1,152 @@
+-- Command Bar Script - Match Setup System
+-- Creates MatchService ModuleScript + ensures match remotes + validates arenas with Chair
+-- How to use: View > Command Bar > Paste > Enter, then paste code from GitHub
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local Workspace = game:GetService("Workspace")
+
+print("=== Creating Match Setup ===")
+
+-- Shared (ensure exists)
+local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
+if not sharedFolder then
+    sharedFolder = Instance.new("Folder")
+    sharedFolder.Name = "Shared"
+    sharedFolder.Parent = ReplicatedStorage
+end
+
+-- Ensure MatchStates and Roles updated (with new states: Preparing, SelectingTarget, WaitingForPuncher, etc.)
+for _, name in ipairs({"Config","QueueStates","MatchStates","Roles","RemoteNames","Constants"}) do
+    if not sharedFolder:FindFirstChild(name) then
+        local m = Instance.new("ModuleScript")
+        m.Name = name
+        m.Parent = sharedFolder
+        print("Created Shared/"..name.." - paste code from GitHub src/Shared/"..name..".luau")
+    else
+        print("Exists Shared/"..name)
+    end
+end
+
+-- Remotes
+local remotesFolder = ReplicatedStorage:FindFirstChild("Remotes")
+if not remotesFolder then
+    remotesFolder = Instance.new("Folder")
+    remotesFolder.Name = "Remotes"
+    remotesFolder.Parent = ReplicatedStorage
+end
+
+local matchRemotes = {"RE_MatchStart","RE_MatchStateUpdate","RE_MatchEnd","RE_RoleAssigned","RE_TargetSelected","RE_QueueJoinRequest","RE_QueueLeaveRequest","RE_QueueStateUpdate","RE_QueueCountdownUpdate","RE_QueueLocked","RE_QueueStarted","RE_QueuePlayerLeft"}
+for _, name in ipairs(matchRemotes) do
+    if not remotesFolder:FindFirstChild(name) then
+        local re = Instance.new("RemoteEvent")
+        re.Name = name
+        re.Parent = remotesFolder
+        print("Created Remotes/"..name)
+    end
+end
+
+-- Services
+local servicesFolder = ServerScriptService:FindFirstChild("Services")
+if not servicesFolder then
+    servicesFolder = Instance.new("Folder")
+    servicesFolder.Name = "Services"
+    servicesFolder.Parent = ServerScriptService
+end
+
+if not servicesFolder:FindFirstChild("RemoteService") then
+    local m = Instance.new("ModuleScript")
+    m.Name = "RemoteService"
+    m.Parent = servicesFolder
+    print("Created Services/RemoteService")
+end
+
+if not servicesFolder:FindFirstChild("QueueService") then
+    local m = Instance.new("ModuleScript")
+    m.Name = "QueueService"
+    m.Parent = servicesFolder
+    print("Created Services/QueueService")
+end
+
+if not servicesFolder:FindFirstChild("MatchService") then
+    local m = Instance.new("ModuleScript")
+    m.Name = "MatchService"
+    m.Parent = servicesFolder
+    print("Created Services/MatchService - paste code from GitHub src/Server/Services/MatchService.luau")
+else
+    print("Exists Services/MatchService - update code from GitHub src/Server/Services/MatchService.luau")
+end
+
+-- Main server script
+if not ServerScriptService:FindFirstChild("GuessThePuncherServer") then
+    local s = Instance.new("Script")
+    s.Name = "GuessThePuncherServer"
+    s.Parent = ServerScriptService
+    print("Created GuessThePuncherServer - paste code from GitHub src/Server/Main.server.luau")
+else
+    print("Exists GuessThePuncherServer - update code from GitHub src/Server/Main.server.luau")
+end
+
+-- Workspace validation
+local lobby = Workspace:FindFirstChild("Lobby")
+if not lobby then
+    warn("Missing Workspace.Lobby - create per docs/QUEUE_MANUAL_OBJECTS.md")
+else
+    local matchSlots = lobby:FindFirstChild("MatchSlots")
+    if not matchSlots then
+        warn("Missing Lobby.MatchSlots")
+    else
+        for _, slotName in ipairs({"Slot2","Slot4","Slot6"}) do
+            if not matchSlots:FindFirstChild(slotName) then
+                warn("Missing MatchSlots/"..slotName)
+            end
+        end
+    end
+end
+
+local arenasFolder = Workspace:FindFirstChild("MatchArenas")
+if not arenasFolder then
+    arenasFolder = Instance.new("Folder")
+    arenasFolder.Name = "MatchArenas"
+    arenasFolder.Parent = Workspace
+    print("Created Workspace.MatchArenas - you said you will put arenas in folder, now create Arena2, Arena4, Arena6 inside")
+end
+
+local function ensureArena(arenaName, basePos)
+    local arena = arenasFolder:FindFirstChild(arenaName)
+    if not arena then
+        arena = Instance.new("Model")
+        arena.Name = arenaName
+        arena.Parent = arenasFolder
+        print("Created MatchArenas/"..arenaName.." at "..tostring(basePos).." - add TargetStand, PuncherStand, PlayerSpawns")
+        return
+    end
+    if not arena:FindFirstChild("TargetStand") then
+        warn("Missing "..arenaName.."/TargetStand - create Part 4,1,4 Anchored Red at "..tostring(basePos))
+    else
+        local targetStand = arena:FindFirstChild("TargetStand")
+        if not targetStand:FindFirstChild("Chair") then
+            warn("Missing "..arenaName.."/TargetStand/Chair (Seat) - Insert Seat object named Chair, Size 2,1,2 Anchored true at 1 stud above TargetStand, target will sit on chair")
+        end
+    end
+    if not arena:FindFirstChild("PuncherStand") then
+        warn("Missing "..arenaName.."/PuncherStand - create Part 4,1,4 Anchored Blue 6 studs behind TargetStand")
+    end
+    if not arena:FindFirstChild("PlayerSpawns") then
+        warn("Missing "..arenaName.."/PlayerSpawns - create Folder with Player1..N Parts")
+    end
+end
+
+ensureArena("Arena2", Vector3.new(0,100,0))
+ensureArena("Arena4", Vector3.new(200,100,0))
+ensureArena("Arena6", Vector3.new(400,100,0))
+
+print("=== DONE ===")
+print("Next: Paste code from GitHub:")
+print("  src/Shared/Config.luau -> Shared/Config")
+print("  src/Shared/MatchStates.luau -> Shared/MatchStates (now has Preparing, SelectingTarget, WaitingForPuncher, Punching, Guessing, Resolving, Eliminated, Finished)")
+print("  src/Shared/Roles.luau -> Shared/Roles (now has PotentialPuncher)")
+print("  src/Server/Services/MatchService.luau -> Services/MatchService (NEW - basic match setup)")
+print("  src/Server/Services/QueueService.luau -> Services/QueueService (updated to call MatchService and check IsPlayerInMatch)")
+print("  src/Server/Main.server.luau -> GuessThePuncherServer (updated to init MatchService first)")
+print("Then test with 2 clients: join Slot2 -> countdown -> teleport to Arena2 TargetStand+Chair, Target selected server-side random, PotentialPuncher role assigned")
