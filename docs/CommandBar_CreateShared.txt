@@ -1,0 +1,105 @@
+-- Command Bar Script for Guess the Puncher - Shared Config Only
+-- Purpose: Creates folders and ModuleScripts with correct names (no .luau extensions)
+-- How to use: Open Roblox Studio > View > Command Bar > Paste this entire script > Press Enter
+-- Then manually paste code from GitHub src/Shared/ into each ModuleScript
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- Create Shared folder
+local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
+if not sharedFolder then
+    sharedFolder = Instance.new("Folder")
+    sharedFolder.Name = "Shared"
+    sharedFolder.Parent = ReplicatedStorage
+    print("Created ReplicatedStorage.Shared")
+else
+    print("Found existing ReplicatedStorage.Shared")
+end
+
+-- List of ModuleScript names to create (no extensions)
+local moduleNames = {
+    "Config",
+    "MatchStates",
+    "Roles",
+    "PowerZones",
+    "Results",
+    "Types",
+    "Constants"
+}
+
+for _, name in ipairs(moduleNames) do
+    local existing = sharedFolder:FindFirstChild(name)
+    if not existing then
+        local mod = Instance.new("ModuleScript")
+        mod.Name = name
+        mod.Parent = sharedFolder
+        mod.Source = "-- " .. name .. ".luau\n-- Paste code from GitHub src/Shared/" .. name .. ".luau here\nreturn {}\n"
+        print("Created ModuleScript: Shared/" .. name)
+    else
+        if existing:IsA("ModuleScript") then
+            print("Already exists: Shared/" .. name .. " (ModuleScript)")
+        else
+            warn("Object named " .. name .. " exists but is not ModuleScript: " .. existing.ClassName)
+        end
+    end
+end
+
+print("Done! Now copy code from GitHub src/Shared/ into each ModuleScript.")
+print("Verify with: require(ReplicatedStorage.Shared.Config) etc.")
+
+-- Optional: Create full project skeleton folders (no code, just structure) - uncomment if you want full skeleton
+--[[
+local ServerScriptService = game:GetService("ServerScriptService")
+local StarterPlayer = game:GetService("StarterPlayer")
+local StarterGui = game:GetService("StarterGui")
+local Workspace = game:GetService("Workspace")
+
+-- ServerScriptService/Services
+local servicesFolder = ServerScriptService:FindFirstChild("Services")
+if not servicesFolder then
+    servicesFolder = Instance.new("Folder")
+    servicesFolder.Name = "Services"
+    servicesFolder.Parent = ServerScriptService
+    print("Created ServerScriptService.Services")
+end
+
+-- StarterPlayerScripts/Controllers
+local starterPlayerScripts = StarterPlayer:FindFirstChild("StarterPlayerScripts")
+if starterPlayerScripts then
+    local controllersFolder = starterPlayerScripts:FindFirstChild("Controllers")
+    if not controllersFolder then
+        controllersFolder = Instance.new("Folder")
+        controllersFolder.Name = "Controllers"
+        controllersFolder.Parent = starterPlayerScripts
+        print("Created StarterPlayerScripts.Controllers")
+    end
+end
+
+-- Workspace.Lobby.MatchSlots
+local lobbyFolder = Workspace:FindFirstChild("Lobby")
+if not lobbyFolder then
+    lobbyFolder = Instance.new("Folder")
+    lobbyFolder.Name = "Lobby"
+    lobbyFolder.Parent = Workspace
+    print("Created Workspace.Lobby")
+end
+
+local matchSlotsFolder = lobbyFolder:FindFirstChild("MatchSlots")
+if not matchSlotsFolder then
+    matchSlotsFolder = Instance.new("Folder")
+    matchSlotsFolder.Name = "MatchSlots"
+    matchSlotsFolder.Parent = lobbyFolder
+    print("Created Workspace.Lobby.MatchSlots")
+end
+
+-- Workspace.MatchArenas
+local matchArenasFolder = Workspace:FindFirstChild("MatchArenas")
+if not matchArenasFolder then
+    matchArenasFolder = Instance.new("Folder")
+    matchArenasFolder.Name = "MatchArenas"
+    matchArenasFolder.Parent = Workspace
+    print("Created Workspace.MatchArenas")
+end
+
+print("Full skeleton folders created (optional part).")
+]]

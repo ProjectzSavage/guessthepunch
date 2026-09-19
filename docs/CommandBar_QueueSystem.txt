@@ -1,0 +1,93 @@
+-- Command Bar Script - Queue System Only (Minimal)
+-- Creates folders and ModuleScripts with correct names (no .luau extensions)
+-- How to use: Studio > View > Command Bar > Paste this entire script > Enter
+-- Then manually paste code from GitHub src/Shared/ and src/Server/ into each ModuleScript
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+-- Shared folder
+local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
+if not sharedFolder then
+    sharedFolder = Instance.new("Folder")
+    sharedFolder.Name = "Shared"
+    sharedFolder.Parent = ReplicatedStorage
+    print("Created ReplicatedStorage.Shared")
+end
+
+local sharedModules = {"Config", "QueueStates", "RemoteNames", "Constants", "MatchStates", "Roles", "PowerZones", "Results", "Types"}
+for _, name in ipairs(sharedModules) do
+    if not sharedFolder:FindFirstChild(name) then
+        local m = Instance.new("ModuleScript")
+        m.Name = name
+        m.Parent = sharedFolder
+        m.Source = "-- "..name..".luau\n-- Paste code from GitHub src/Shared/"..name..".luau\nreturn {}\n"
+        print("Created Shared/"..name)
+    else
+        print("Exists Shared/"..name)
+    end
+end
+
+-- Remotes folder (auto-created by server, but ensure exists)
+local remotesFolder = ReplicatedStorage:FindFirstChild("Remotes")
+if not remotesFolder then
+    remotesFolder = Instance.new("Folder")
+    remotesFolder.Name = "Remotes"
+    remotesFolder.Parent = ReplicatedStorage
+    print("Created ReplicatedStorage.Remotes")
+end
+
+-- Queue remotes
+local queueRemotes = {"RE_QueueJoinRequest","RE_QueueLeaveRequest","RE_QueueStateUpdate","RE_QueueCountdownUpdate","RE_QueueLocked","RE_QueueStarted","RE_QueuePlayerLeft"}
+for _, name in ipairs(queueRemotes) do
+    if not remotesFolder:FindFirstChild(name) then
+        local re = Instance.new("RemoteEvent")
+        re.Name = name
+        re.Parent = remotesFolder
+        print("Created Remotes/"..name)
+    end
+end
+
+-- Services folder
+local servicesFolder = ServerScriptService:FindFirstChild("Services")
+if not servicesFolder then
+    servicesFolder = Instance.new("Folder")
+    servicesFolder.Name = "Services"
+    servicesFolder.Parent = ServerScriptService
+    print("Created ServerScriptService.Services")
+end
+
+local serviceModules = {"RemoteService","QueueService"}
+for _, name in ipairs(serviceModules) do
+    if not servicesFolder:FindFirstChild(name) then
+        local m = Instance.new("ModuleScript")
+        m.Name = name
+        m.Parent = servicesFolder
+        m.Source = "-- "..name..".luau\n-- Paste code from GitHub src/Server/Services/"..name..".luau\nreturn {}\n"
+        print("Created Services/"..name)
+    else
+        print("Exists Services/"..name)
+    end
+end
+
+-- Main server script
+if not ServerScriptService:FindFirstChild("GuessThePuncherServer") then
+    local s = Instance.new("Script")
+    s.Name = "GuessThePuncherServer"
+    s.Source = "-- Main.server.luau\n-- Paste code from GitHub src/Server/Main.server.luau\nprint('Paste code here')\n"
+    s.Parent = ServerScriptService
+    print("Created ServerScriptService/GuessThePuncherServer")
+else
+    print("Exists GuessThePuncherServer")
+end
+
+print("=== DONE ===")
+print("Now paste code from GitHub:")
+print("  src/Shared/Config.luau -> Shared/Config")
+print("  src/Shared/QueueStates.luau -> Shared/QueueStates")
+print("  src/Shared/RemoteNames.luau -> Shared/RemoteNames")
+print("  src/Shared/Constants.luau -> Shared/Constants (standalone, no requires - fixes yellow underline)")
+print("  src/Server/Services/RemoteService.luau -> Services/RemoteService")
+print("  src/Server/Services/QueueService.luau -> Services/QueueService")
+print("  src/Server/Main.server.luau -> GuessThePuncherServer")
+print("Then create Workspace objects per docs/QUEUE_MANUAL_OBJECTS.md")
