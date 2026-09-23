@@ -1,0 +1,128 @@
+-- CommandBar script to create Puncher Selection system
+-- Paste into Studio Command Bar and run
+
+local function ensureFolder(parent, name)
+    local folder = parent:FindFirstChild(name)
+    if not folder then
+        folder = Instance.new("Folder")
+        folder.Name = name
+        folder.Parent = parent
+        print("Created Folder: " .. parent:GetFullName() .. "." .. name)
+    end
+    return folder
+end
+
+local function ensureModuleScript(parent, name)
+    local mod = parent:FindFirstChild(name)
+    if not mod then
+        mod = Instance.new("ModuleScript")
+        mod.Name = name
+        mod.Parent = parent
+        print("Created ModuleScript: " .. parent:GetFullName() .. "." .. name)
+    end
+    return mod
+end
+
+-- Shared
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Shared = ensureFolder(ReplicatedStorage, "Shared")
+local Config = ensureModuleScript(Shared, "Config")
+local RemoteNames = ensureModuleScript(Shared, "RemoteNames")
+
+-- Remotes
+local Remotes = ensureFolder(ReplicatedStorage, "Remotes")
+local function ensureRemote(name)
+    local re = Remotes:FindFirstChild(name)
+    if not re then
+        re = Instance.new("RemoteEvent")
+        re.Name = name
+        re.Parent = Remotes
+        print("Created RemoteEvent: Remotes." .. name)
+    end
+    return re
+end
+ensureRemote("RE_PunchRequest")
+ensureRemote("RE_PunchRejected")
+ensureRemote("RE_PuncherSelected")
+ensureRemote("RE_PuncherPreparation")
+ensureRemote("RE_MatchStart")
+ensureRemote("RE_MatchStateUpdate")
+ensureRemote("RE_MatchEnd")
+ensureRemote("RE_RoleAssigned")
+ensureRemote("RE_TargetSelected")
+ensureRemote("RE_QueueJoinRequest")
+ensureRemote("RE_QueueLeaveRequest")
+ensureRemote("RE_QueueStateUpdate")
+ensureRemote("RE_QueueCountdownUpdate")
+ensureRemote("RE_QueueLocked")
+ensureRemote("RE_QueueStarted")
+ensureRemote("RE_QueuePlayerLeft")
+
+-- Server Services
+local ServerScriptService = game:GetService("ServerScriptService")
+local Services = ensureFolder(ServerScriptService, "Services")
+local MatchService = ensureModuleScript(Services, "MatchService")
+
+-- Client
+local StarterPlayer = game:GetService("StarterPlayer")
+local StarterPlayerScripts = StarterPlayer:FindFirstChild("StarterPlayerScripts") or ensureFolder(StarterPlayer, "StarterPlayerScripts")
+local GuessThePuncherClient = StarterPlayerScripts:FindFirstChild("GuessThePuncherClient")
+if not GuessThePuncherClient then
+    GuessThePuncherClient = Instance.new("LocalScript")
+    GuessThePuncherClient.Name = "GuessThePuncherClient"
+    GuessThePuncherClient.Parent = StarterPlayerScripts
+    print("Created LocalScript: GuessThePuncherClient")
+end
+local ClientServices = GuessThePuncherClient:FindFirstChild("Services")
+if not ClientServices then
+    ClientServices = Instance.new("Folder")
+    ClientServices.Name = "Services"
+    ClientServices.Parent = GuessThePuncherClient
+    print("Created Folder: GuessThePuncherClient.Services")
+end
+local TargetCameraService = ensureModuleScript(ClientServices, "TargetCameraService")
+local TargetVisibilityService = ensureModuleScript(ClientServices, "TargetVisibilityService")
+local PuncherSelectionService = ensureModuleScript(ClientServices, "PuncherSelectionService")
+
+-- Arena check
+local Workspace = game:GetService("Workspace")
+local MatchArenas = Workspace:FindFirstChild("MatchArenas")
+if MatchArenas then
+    for _, arena in ipairs(MatchArenas:GetChildren()) do
+        if arena:IsA("Model") then
+            local targetStand = arena:FindFirstChild("TargetStand")
+            local puncherStand = arena:FindFirstChild("PuncherStand")
+            if not targetStand then
+                warn("Missing TargetStand in " .. arena.Name .. " - create Part named TargetStand")
+            end
+            if not puncherStand then
+                warn("Missing PuncherStand in " .. arena.Name .. " - create Part named PuncherStand behind TargetStand at -LookVector*6")
+                -- Auto-create for testing
+                if targetStand and targetStand:IsA("BasePart") then
+                    local ps = Instance.new("Part")
+                    ps.Name = "PuncherStand"
+                    ps.Anchored = true
+                    ps.CanCollide = false
+                    ps.Transparency = 0.5
+                    ps.Size = Vector3.new(4,1,4)
+                    ps.CFrame = targetStand.CFrame * CFrame.new(0,0,6)
+                    ps.Parent = arena
+                    print("Auto-created PuncherStand in " .. arena.Name .. " at " .. tostring(ps.CFrame))
+                end
+            end
+        end
+    end
+else
+    warn("Missing Workspace.MatchArenas folder - create per docs")
+end
+
+print("=== Puncher Selection Setup Complete ===")
+print("Paste code from GitHub:")
+print("1. Shared_Config.luau -> ReplicatedStorage.Shared.Config")
+print("2. Shared_RemoteNames.luau -> ReplicatedStorage.Shared.RemoteNames")
+print("3. Server_MatchService.luau -> ServerScriptService.Services.MatchService")
+print("4. Client_Main.client.luau -> StarterPlayerScripts.GuessThePuncherClient")
+print("5. Client_TargetCameraService.luau -> Services.TargetCameraService")
+print("6. Client_TargetVisibilityService.luau -> Services.TargetVisibilityService")
+print("7. Client_PuncherSelectionService.luau -> Services.PuncherSelectionService")
+print("Test: 3 clients join same Slot, Target selected, PotentialPunchers press F to request punch, first becomes Puncher behind Target, preparation 3s, cannot leave >4 studs")

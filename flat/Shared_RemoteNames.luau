@@ -17,13 +17,20 @@ RemoteNames.Queue = {
 	PlayerLeft = "RE_QueuePlayerLeft", -- Server -> All (slotId, userId)
 }
 
--- Future match remotes (not implemented yet, but reserved)
+-- Future match remotes (Puncher selection phase + future)
 RemoteNames.Match = {
 	MatchStart = "RE_MatchStart",
 	MatchStateUpdate = "RE_MatchStateUpdate",
+	MatchEnd = "RE_MatchEnd",
+	RoleAssigned = "RE_RoleAssigned",
+	TargetSelected = "RE_TargetSelected",
+	-- Puncher selection phase (implemented in this phase)
 	PunchOpportunityOpen = "RE_PunchOpportunityOpen",
-	PunchRequest = "RE_PunchRequest",
-	PuncherSelected = "RE_PuncherSelected",
+	PunchRequest = "RE_PunchRequest", -- Client -> Server, only punch request, no winner/timestamp/damage/power/role
+	PunchRejected = "RE_PunchRejected", -- Server -> Client, reason for rejection
+	PuncherSelected = "RE_PuncherSelected", -- Server -> Client, filtered (Target does NOT get puncherUserId before reveal)
+	PuncherPreparation = "RE_PuncherPreparation", -- Server -> Client, preparation countdown
+	-- Future: power, damage, guessing, knockout, scoring (not implemented yet)
 	PowerGaugeOpen = "RE_PowerGaugeOpen",
 	PowerGaugeStopRequest = "RE_PowerGaugeStopRequest",
 	PowerGaugeResult = "RE_PowerGaugeResult",
@@ -32,7 +39,6 @@ RemoteNames.Match = {
 	GuessRequest = "RE_GuessRequest",
 	GuessResult = "RE_GuessResult",
 	TargetEliminated = "RE_TargetEliminated",
-	MatchEnd = "RE_MatchEnd",
 	CameraMode = "RE_CameraMode",
 	AnimationPlay = "RE_AnimationPlay",
 }

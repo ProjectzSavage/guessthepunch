@@ -1,10 +1,11 @@
 --!nonstrict
--- Main.client.luau - Queue + Match Setup + Target Camera/Visibility Client
--- Purpose: Listens to queue and match state, controls Target camera and visibility presentation only
--- Implements ONLY Target camera and visibility system (no punch, power, damage, guessing, knockout, scoring, GUI)
--- Server controls Target role, client controls camera presentation only
+-- Main.client.luau - Queue + Match Setup + Target Camera/Visibility + Puncher Selection Client
+-- Purpose: Listens to queue and match state, controls Target camera/visibility and Puncher request presentation only
+-- Implements: Target camera/visibility + Puncher selection phase (first valid server-accepted becomes Puncher)
+-- Server controls all roles and validation, client sends only Punch request (no winner/timestamp/damage/power/role)
+-- Does NOT implement: power gauge, damage, guessing, knockout, scoring, monetization, final GUI
 -- Roblox Studio Destination: StarterPlayer > StarterPlayerScripts > GuessThePuncherClient (LocalScript)
--- Expected children: Services folder with TargetCameraService and TargetVisibilityService ModuleScripts
+-- Expected children: Services folder with TargetCameraService, TargetVisibilityService, PuncherSelectionService ModuleScripts
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
@@ -22,20 +23,18 @@ if Shared then
 	end
 end
 
--- Load Target Camera and Visibility Services (try multiple paths for Studio setup flexibility)
+-- Load Client Services
 local TargetCameraService = nil
 local TargetVisibilityService = nil
+local PuncherSelectionService = nil
 
 local function loadClientServices()
-	-- Try: script.Services folder (if Main.client has Services as child)
 	local servicesFolder = script:FindFirstChild("Services")
 	if not servicesFolder then
-		-- Try sibling folder in StarterPlayerScripts
 		local starterPlayerScripts = script.Parent
 		if starterPlayerScripts then
 			servicesFolder = starterPlayerScripts:FindFirstChild("Services")
 			if not servicesFolder then
-				-- Try GuessThePuncherClient folder
 				local gtpFolder = starterPlayerScripts:FindFirstChild("GuessThePuncherClient")
 				if gtpFolder then
 					servicesFolder = gtpFolder:FindFirstChild("Services")
@@ -44,7 +43,6 @@ local function loadClientServices()
 		end
 	end
 	if not servicesFolder then
-		-- Try ReplicatedStorage Client Services (fallback for flat structure)
 		local clientFolder = ReplicatedStorage:FindFirstChild("Client")
 		if clientFolder then
 			servicesFolder = clientFolder:FindFirstChild("Services")
@@ -54,6 +52,7 @@ local function loadClientServices()
 	if servicesFolder then
 		local camMod = servicesFolder:FindFirstChild("TargetCameraService")
 		local visMod = servicesFolder:FindFirstChild("TargetVisibilityService")
+		local punchMod = servicesFolder:FindFirstChild("PuncherSelectionService")
 		if camMod then
 			local ok, mod = pcall(require, camMod)
 			if ok then TargetCameraService = mod else warn("[Client] Failed to require TargetCameraService: " .. tostring(mod)) end
@@ -62,18 +61,24 @@ local function loadClientServices()
 			local ok, mod = pcall(require, visMod)
 			if ok then TargetVisibilityService = mod else warn("[Client] Failed to require TargetVisibilityService: " .. tostring(mod)) end
 		end
+		if punchMod then
+			local ok, mod = pcall(require, punchMod)
+			if ok then PuncherSelectionService = mod else warn("[Client] Failed to require PuncherSelectionService: " .. tostring(mod)) end
+		end
 	else
-		warn("[Client] Services folder not found - Target camera/visibility will be disabled. Create StarterPlayerScripts/GuessThePuncherClient/Services with TargetCameraService and TargetVisibilityService ModuleScripts")
+		warn("[Client] Services folder not found - create StarterPlayerScripts/GuessThePuncherClient/Services with TargetCameraService, TargetVisibilityService, PuncherSelectionService")
 	end
 end
 
 loadClientServices()
 
--- Track current match state for camera/visibility logic
+-- Track current match state
 local currentMatchId: string? = nil
 local currentRole: string? = nil
-local currentMatchPlayers: { [number]: Player } = {} -- [userId] = Player
+local currentState: string? = nil
+local currentMatchPlayers: { [number]: Player } = {}
 local currentTargetUserId: number? = nil
+local currentPuncherUserId: number? = nil
 
 local function isLocalPlayerTarget(): boolean
 	if currentRole == "Target" then return true end
@@ -89,7 +94,6 @@ local function updateMatchPlayersFromPayload(payload)
 		if plr then
 			currentMatchPlayers[userId] = plr
 		else
-			-- Player might have left, try FindFirstChild
 			for _, p in ipairs(Players:GetPlayers()) do
 				if p.UserId == userId then
 					currentMatchPlayers[userId] = p
@@ -98,13 +102,15 @@ local function updateMatchPlayersFromPayload(payload)
 			end
 		end
 	end
-	-- Also include local player if not in list but in match
 	if currentMatchId and not currentMatchPlayers[player.UserId] then
 		currentMatchPlayers[player.UserId] = player
 	end
-
 	if TargetVisibilityService then
 		TargetVisibilityService.UpdateMatchPlayers(currentMatchPlayers)
+	end
+	if PuncherSelectionService and payload.puncherUserId then
+		-- Update puncher tracking for client (filtered, Target won't get it)
+		currentPuncherUserId = payload.puncherUserId
 	end
 end
 
@@ -117,7 +123,7 @@ local function applyTargetState()
 		TargetVisibilityService.SetIsTarget(isTarget, currentMatchPlayers)
 	end
 	if isTarget then
-		print("[Client] You are now TARGET - restricted first-person camera enforced, behind players hidden locally")
+		print("[Client] You are now TARGET - restricted first-person, behind players hidden")
 	else
 		if currentRole then
 			print("[Client] Your role: " .. tostring(currentRole) .. " - normal camera")
@@ -125,27 +131,29 @@ local function applyTargetState()
 	end
 end
 
+local function applyPuncherState()
+	if PuncherSelectionService then
+		PuncherSelectionService.UpdateState(currentMatchId, currentRole, currentState, currentPuncherUserId ~= nil)
+	end
+end
+
 local function restoreAll()
-	print("[Client] Restoring camera and visibility - match ended or role cleared")
-	if TargetCameraService then
-		TargetCameraService.Restore()
-	end
-	if TargetVisibilityService then
-		TargetVisibilityService.Restore()
-	end
+	print("[Client] Restoring camera, visibility, puncher state - match ended")
+	if TargetCameraService then TargetCameraService.Restore() end
+	if TargetVisibilityService then TargetVisibilityService.Restore() end
+	if PuncherSelectionService then PuncherSelectionService.HandleMatchEnd() end
 	currentMatchId = nil
 	currentRole = nil
+	currentState = nil
 	currentTargetUserId = nil
+	currentPuncherUserId = nil
 	currentMatchPlayers = {}
 end
 
 -- Initialize services
-if TargetCameraService and TargetCameraService.Init then
-	TargetCameraService.Init()
-end
-if TargetVisibilityService and TargetVisibilityService.Init then
-	TargetVisibilityService.Init()
-end
+if TargetCameraService and TargetCameraService.Init then TargetCameraService.Init() end
+if TargetVisibilityService and TargetVisibilityService.Init then TargetVisibilityService.Init() end
+if PuncherSelectionService and PuncherSelectionService.Init then PuncherSelectionService.Init() end
 
 local remotesFolder = ReplicatedStorage:WaitForChild("Remotes", 10)
 if not remotesFolder then
@@ -153,13 +161,12 @@ if not remotesFolder then
 	return
 end
 
--- Queue events (unchanged from previous phase)
+-- Queue events
 local stateUpdate = remotesFolder:WaitForChild("RE_QueueStateUpdate", 10)
 if stateUpdate then
 	stateUpdate.OnClientEvent:Connect(function(slotId, occupancyList, maxPlayers, state, countdownTimeLeft, locked, occupancyCount)
 		print(string.format("[Queue] %s: %d/%d state=%s countdown=%.1f locked=%s", slotId, occupancyCount or #occupancyList, maxPlayers, state, countdownTimeLeft or 0, tostring(locked)))
 	end)
-	print("[QueueClient] Listening to RE_QueueStateUpdate")
 end
 
 local queueStarted = remotesFolder:FindFirstChild("RE_QueueStarted")
@@ -173,26 +180,15 @@ end
 local matchStart = remotesFolder:FindFirstChild("RE_MatchStart")
 if matchStart then
 	matchStart.OnClientEvent:Connect(function(matchId, arenaName, players)
-		print(string.format("[Match] Start matchId=%s arena=%s players=%d (%s)", matchId, arenaName, #players, table.concat(players, ",")))
+		print(string.format("[Match] Start matchId=%s arena=%s players=%d", matchId, arenaName, #players))
 		currentMatchId = matchId
-		-- Build player map
 		currentMatchPlayers = {}
 		for _, uid in ipairs(players) do
 			local plr = Players:GetPlayerByUserId(uid)
-			if plr then
-				currentMatchPlayers[uid] = plr
-			else
-				for _, p in ipairs(Players:GetPlayers()) do
-					if p.UserId == uid then
-						currentMatchPlayers[uid] = p
-						break
-					end
-				end
-			end
+			if plr then currentMatchPlayers[uid] = plr end
 		end
-		if TargetVisibilityService then
-			TargetVisibilityService.UpdateMatchPlayers(currentMatchPlayers)
-		end
+		if TargetVisibilityService then TargetVisibilityService.UpdateMatchPlayers(currentMatchPlayers) end
+		if PuncherSelectionService then PuncherSelectionService.UpdateState(matchId, nil, nil, false) end
 	end)
 end
 
@@ -200,38 +196,33 @@ local matchStateUpdate = remotesFolder:FindFirstChild("RE_MatchStateUpdate")
 if matchStateUpdate then
 	matchStateUpdate.OnClientEvent:Connect(function(payload)
 		if payload then
-			print(string.format("[Match] StateUpdate matchId=%s state=%s target=%s players=%d", tostring(payload.matchId), tostring(payload.state), tostring(payload.targetUserId), payload.players and #payload.players or 0))
-			-- Update current match tracking
-			if payload.matchId then
-				currentMatchId = payload.matchId
-			end
-			if payload.targetUserId then
-				currentTargetUserId = payload.targetUserId
-			end
+			print(string.format("[Match] StateUpdate matchId=%s state=%s target=%s puncher=%s players=%d", tostring(payload.matchId), tostring(payload.state), tostring(payload.targetUserId), tostring((payload :: any).puncherUserId), payload.players and #payload.players or 0))
+			if payload.matchId then currentMatchId = payload.matchId end
+			if payload.state then currentState = payload.state end
+			if payload.targetUserId then currentTargetUserId = payload.targetUserId end
+			if (payload :: any).puncherUserId then currentPuncherUserId = (payload :: any).puncherUserId end
 			updateMatchPlayersFromPayload(payload)
 
-			-- Check our role from filtered payload (server does NOT send Puncher identity to Target)
 			if payload.roles then
 				local ourRole = payload.roles[player.UserId]
 				if ourRole then
 					currentRole = ourRole
-					print(string.format("[Match] Your role (filtered payload): %s", ourRole))
-					-- Security check: ensure Target never receives Puncher role for others (server filtering)
+					print(string.format("[Match] Your role (filtered): %s", ourRole))
 					if ourRole == "Target" then
 						for uid, role in pairs(payload.roles) do
 							if uid ~= player.UserId and role == "Puncher" then
-								warn("[Security] Target received Puncher role for other player! Server filtering failed - should be masked as PotentialPuncher")
+								warn("[Security] Target received Puncher role! Filtering failed")
 							end
 						end
-						-- Also ensure payload does NOT contain puncherUserId
 						if (payload :: any).puncherUserId then
-							warn("[Security] Payload contains puncherUserId - should NOT be sent to clients before reveal!")
+							warn("[Security] Target payload contains puncherUserId before reveal! Should be hidden")
 						end
 					end
 				end
 			end
 
 			applyTargetState()
+			applyPuncherState()
 		end
 	end)
 end
@@ -239,7 +230,7 @@ end
 local matchEnd = remotesFolder:FindFirstChild("RE_MatchEnd")
 if matchEnd then
 	matchEnd.OnClientEvent:Connect(function(matchId, reason)
-		print(string.format("[Match] End matchId=%s reason=%s - returning to lobby, restoring camera", matchId, reason))
+		print(string.format("[Match] End matchId=%s reason=%s", matchId, reason))
 		restoreAll()
 	end)
 end
@@ -250,41 +241,42 @@ if roleAssigned then
 		print(string.format("[Match] RoleAssigned matchId=%s role=%s", matchId, role))
 		currentMatchId = matchId
 		currentRole = role
-		if role == "Target" then
-			currentTargetUserId = player.UserId
-		end
+		if role == "Target" then currentTargetUserId = player.UserId end
+		if role == "Puncher" then currentPuncherUserId = player.UserId end
 		applyTargetState()
+		applyPuncherState()
 	end)
 end
 
--- Handle reset/death/disconnect/match completion safely
+-- Puncher specific remotes handled inside PuncherSelectionService, but also log here for debug
+local puncherSelected = remotesFolder:FindFirstChild("RE_PuncherSelected")
+if puncherSelected then
+	puncherSelected.OnClientEvent:Connect(function(matchId, puncherUserId)
+		print(string.format("[Match] PuncherSelected event matchId=%s puncher=%s (nil=hidden from Target)", matchId, tostring(puncherUserId)))
+		if puncherUserId then currentPuncherUserId = puncherUserId end
+		applyPuncherState()
+	end)
+end
+
 player.CharacterAdded:Connect(function(character)
-	print("[Client] CharacterAdded - if Target, camera will re-apply")
-	-- Services handle their own CharacterAdded, but we also ensure state re-applied after delay
+	print("[Client] CharacterAdded - re-applying states if needed")
 	task.wait(0.5)
-	if isLocalPlayerTarget() then
-		applyTargetState()
-	end
+	if isLocalPlayerTarget() then applyTargetState() end
+	applyPuncherState()
 end)
 
--- If player leaves match (PlayerRemoving handled server-side, client just restores on MatchEnd)
--- Also handle when local player is removed from match without MatchEnd (edge case)
 Players.PlayerRemoving:Connect(function(leavingPlayer)
 	if leavingPlayer.UserId == player.UserId then
 		restoreAll()
 	else
-		-- Other player left, update visibility list
 		if currentMatchPlayers[leavingPlayer.UserId] then
 			currentMatchPlayers[leavingPlayer.UserId] = nil
-			if TargetVisibilityService then
-				TargetVisibilityService.UpdateMatchPlayers(currentMatchPlayers)
-			end
+			if TargetVisibilityService then TargetVisibilityService.UpdateMatchPlayers(currentMatchPlayers) end
 		end
 	end
 end)
 
-print("[GuessThePuncherClient] Ready - Queue + Match Setup + Target Camera/Visibility")
-print("  To join queue: game.ReplicatedStorage.Remotes.RE_QueueJoinRequest:FireServer('Slot2')")
-print("  To leave queue: game.ReplicatedStorage.Remotes.RE_QueueLeaveRequest:FireServer()")
-print("  Or walk onto EntryArea part")
-print("  When you become Target: first-person forced, max yaw " .. tostring(Config and Config.TargetMaxYawDegrees or 65) .. "°, max pitch " .. tostring(Config and Config.TargetMaxPitchDegrees or 30) .. "°, behind players hidden locally")
+print("[GuessThePuncherClient] Ready - Queue + Match + Target Camera/Visibility + Puncher Selection")
+print("  Join queue: RE_QueueJoinRequest:FireServer('Slot2') or walk onto EntryArea")
+print("  When PotentialPuncher in WaitingForPuncher: Press F to request Punch (or RE_PunchRequest:FireServer(matchId))")
+print("  First valid server-accepted becomes Puncher, moved behind Target, preparation " .. tostring(Config and Config.PuncherPreparationTime or 3) .. "s")

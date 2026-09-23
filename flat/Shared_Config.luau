@@ -43,9 +43,19 @@ Config.ArenaBySlot = {
 }
 
 -- ============================================================================
--- FUTURE: Punch, Power, Guessing, Damage (not implemented yet, but centralized)
+-- PUNCHER SELECTION (Phase: Puncher selection only)
 -- ============================================================================
-Config.PunchSelectionDuration = 10
+Config.PunchSelectionDuration = 15 -- max time to wait for someone to request punch in WaitingForPuncher
+Config.PuncherPreparationTime = 3 -- short preparation period after Puncher selected, before future power gauge
+Config.PuncherMaxDistanceFromPosition = 4 -- max distance Puncher can move from controlled behind position during preparation
+Config.PuncherEnforceInterval = 0.2 -- how often server enforces Puncher position
+Config.PunchRequestCooldown = 0.5 -- rate limit per player for punch requests (anti-spam)
+Config.PunchSpamThreshold = 3 -- max requests within window before temp block
+Config.PunchSpamWindow = 2 -- seconds window for spam detection
+
+-- ============================================================================
+-- FUTURE: Power, Damage, Guessing, Knockout, Scoring (not implemented yet, but centralized)
+-- ============================================================================
 Config.PowerGaugeDuration = 5
 Config.GuessingDuration = 15
 Config.KnockoutDuration = 3
