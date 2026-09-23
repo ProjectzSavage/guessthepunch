@@ -66,11 +66,25 @@ Config.MissDamage = 0
 Config.PerfectIsInstantKO = true
 
 -- ============================================================================
+-- TARGET CAMERA & VISIBILITY (Phase: Target camera and visibility system only)
+-- ============================================================================
+Config.TargetCameraEnabled = true
+Config.TargetFirstPersonZoom = 0.5 -- force first-person zoom distance
+Config.TargetMaxYawDegrees = 65 -- max left/right rotation from initial forward (prevents inspecting behind)
+Config.TargetMaxPitchDegrees = 30 -- max up/down pitch
+Config.TargetCameraStability = true -- keep camera stable forward
+Config.TargetDisableAutoRotate = true -- prevent character spinning to look behind
+Config.TargetHideBehindPlayers = true -- anti-cheat: hide players behind Target locally
+Config.TargetBehindDotThreshold = -0.1 -- dot product < this means behind ( -1 = directly behind)
+Config.TargetVisibilityCheckInterval = 0.15 -- seconds between visibility updates
+Config.TargetRestoreDelay = 0.2 -- delay after respawn before re-applying camera
+
+-- ============================================================================
 -- TELEPORT & ANTI-EXPLOIT
 -- ============================================================================
 Config.TeleportOffsetY = 3
 Config.PuncherOffsetBehindTarget = 6
-Config.PuncherInvisibleToTarget = true
+Config.PuncherInvisibleToTarget = true -- server controls, client presentation only
 Config.TouchDebounce = 1
 Config.PunchRequestCooldown = 0.5
 Config.DebugPrints = true

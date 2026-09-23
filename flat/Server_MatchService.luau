@@ -131,28 +131,66 @@ local function teleportToLobby(player: Player)
 	hrp.CFrame = CFrame.new(0, 5, 0)
 end
 
-local function broadcastMatchState(matchData)
-	local re = remotes.StateUpdate
-	if not re then return end
-	-- Filtered payload for now: matchId, state, targetUserId, players, roles
-	-- No puncher identity yet (not needed for setup phase)
+local function buildFilteredPayload(matchData, forPlayerUserId: number)
+	-- Server controls Target role, client only presentation
+	-- RE_MatchStateUpdate must NOT contain:
+	-- - puncherUserId before reveal
+	-- - hidden role information
+	-- - data identifying who clicked first
+	-- - private camera or position information
+	-- Must use separate filtered payloads for Target vs other clients
+	local isTargetRecipient = (forPlayerUserId == matchData.targetUserId)
+
+	-- Build base payload (safe for all)
+	local playerList = {}
+	for userId, _ in pairs(matchData.players) do
+		table.insert(playerList, userId)
+	end
+
+	-- Filter roles for Target: hide Puncher identity, show as PotentialPuncher
+	local filteredRoles = {}
+	for uid, role in pairs(matchData.roles) do
+		if isTargetRecipient then
+			-- If recipient is Target, never reveal Puncher role for others
+			-- Puncher should be invisible to Target (server controls, client presentation only)
+			if role == \"Puncher\" then
+				-- Mask as PotentialPuncher so Target cannot deduce who is Puncher
+				filteredRoles[uid] = \"PotentialPuncher\"
+			else
+				filteredRoles[uid] = role
+			end
+		else
+			-- Non-Target sees actual roles (except we still don't reveal Puncher before official reveal for Target only)
+			-- For this phase, PotentialPuncher is visible to all non-Target
+			filteredRoles[uid] = role
+		end
+	end
+
+	-- Payload must NOT contain puncherUserId, healthTable, hidden info, private camera/position
+	-- Only contains: matchId, state, targetUserId, players, roles (filtered), arenaName
+	-- For future: healthTable may be included but must be filtered similarly
 	local payload = {
 		matchId = matchData.matchId,
 		state = matchData.state,
 		targetUserId = matchData.targetUserId,
-		players = {},
-		roles = matchData.roles,
+		players = playerList,
+		roles = filteredRoles,
 		arenaName = matchData.arenaName,
+		-- Explicitly NOT including: puncherUserId, healthTable, hidden role info, camera info, positions
 	}
 
-	for userId, _ in pairs(matchData.players) do
-		table.insert(payload.players, userId)
-	end
+	return payload
+end
 
-	-- Fire to all players in match
+local function broadcastMatchState(matchData)
+	local re = remotes.StateUpdate
+	if not re then return end
+
+	-- Use separate filtered payloads for Target vs other clients (anti-cheat)
 	for _, player in pairs(matchData.playerInstances) do
 		if player and player.Parent then
-			re:FireClient(player, payload)
+			local filteredPayload = buildFilteredPayload(matchData, player.UserId)
+			re:FireClient(player, filteredPayload)
 		end
 	end
 end

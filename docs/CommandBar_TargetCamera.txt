@@ -1,0 +1,92 @@
+-- CommandBar script to create Target Camera and Visibility system
+-- Paste into Studio Command Bar and run
+-- Creates folders and scripts without .luau extensions (Roblox Studio compatible)
+
+local function ensureFolder(parent, name)
+    local folder = parent:FindFirstChild(name)
+    if not folder then
+        folder = Instance.new("Folder")
+        folder.Name = name
+        folder.Parent = parent
+        print("Created Folder: " .. parent:GetFullName() .. "." .. name)
+    end
+    return folder
+end
+
+local function ensureModuleScript(parent, name)
+    local mod = parent:FindFirstChild(name)
+    if not mod then
+        mod = Instance.new("ModuleScript")
+        mod.Name = name
+        mod.Parent = parent
+        print("Created ModuleScript: " .. parent:GetFullName() .. "." .. name)
+    end
+    return mod
+end
+
+local function ensureLocalScript(parent, name)
+    local scr = parent:FindFirstChild(name)
+    if not scr then
+        scr = Instance.new("LocalScript")
+        scr.Name = name
+        scr.Parent = parent
+        print("Created LocalScript: " .. parent:GetFullName() .. "." .. name)
+    end
+    return scr
+end
+
+-- Ensure ReplicatedStorage Shared Config exists
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Shared = ensureFolder(ReplicatedStorage, "Shared")
+local Config = ensureModuleScript(Shared, "Config")
+if Config.Source == "" then
+    Config.Source = "-- Paste Shared/Config.luau from GitHub here (includes Target camera config)\nreturn {}"
+    print("Config ModuleScript created empty - paste code from GitHub")
+end
+
+-- Ensure Server Services
+local ServerScriptService = game:GetService("ServerScriptService")
+local Services = ensureFolder(ServerScriptService, "Services")
+local MatchService = ensureModuleScript(Services, "MatchService")
+if MatchService.Source == "" then
+    MatchService.Source = "-- Paste Server/MatchService.luau from GitHub (with filtered payloads + ServerScriptService fix)\nreturn {}"
+end
+
+-- Ensure Client Services for Target Camera
+local StarterPlayer = game:GetService("StarterPlayer")
+local StarterPlayerScripts = StarterPlayer:FindFirstChild("StarterPlayerScripts") or ensureFolder(StarterPlayer, "StarterPlayerScripts")
+
+local GuessThePuncherClient = StarterPlayerScripts:FindFirstChild("GuessThePuncherClient")
+if not GuessThePuncherClient then
+    GuessThePuncherClient = Instance.new("LocalScript")
+    GuessThePuncherClient.Name = "GuessThePuncherClient"
+    GuessThePuncherClient.Parent = StarterPlayerScripts
+    print("Created LocalScript: StarterPlayerScripts.GuessThePuncherClient - paste Main.client.luau code")
+end
+
+local ClientServices = GuessThePuncherClient:FindFirstChild("Services")
+if not ClientServices then
+    ClientServices = Instance.new("Folder")
+    ClientServices.Name = "Services"
+    ClientServices.Parent = GuessThePuncherClient
+    print("Created Folder: GuessThePuncherClient.Services")
+end
+
+local TargetCameraService = ensureModuleScript(ClientServices, "TargetCameraService")
+if TargetCameraService.Source == "" then
+    TargetCameraService.Source = "-- Paste Client/Services/TargetCameraService.luau from GitHub\nreturn {}"
+end
+
+local TargetVisibilityService = ensureModuleScript(ClientServices, "TargetVisibilityService")
+if TargetVisibilityService.Source == "" then
+    TargetVisibilityService.Source = "-- Paste Client/Services/TargetVisibilityService.luau from GitHub\nreturn {}"
+end
+
+print("=== Target Camera Setup CommandBar Complete ===")
+print("Now paste actual code from GitHub:")
+print("1. Shared/Config.luau -> ReplicatedStorage.Shared.Config")
+print("2. Server_MatchService.luau -> ServerScriptService.Services.MatchService")
+print("3. Client_Main.client.luau -> StarterPlayerScripts.GuessThePuncherClient")
+print("4. Client_TargetCameraService.luau -> GuessThePuncherClient.Services.TargetCameraService")
+print("5. Client_TargetVisibilityService.luau -> GuessThePuncherClient.Services.TargetVisibilityService")
+print("Then test with 2 clients: join same Slot, become Target, verify first-person locked, yaw ±65°, no zoom, behind players hidden")
