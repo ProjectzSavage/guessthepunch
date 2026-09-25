@@ -40,6 +40,7 @@ local RemoteService
 local remotes = {}
 
 local startPowerGauge -- forward declaration, defined in POWER GAUGE section below
+local schedulePunchSequence -- forward declaration, defined in PUNCH RESULT RESOLUTION below
 
 -- ============================================================================
 -- HELPERS
@@ -661,6 +662,8 @@ startPowerGauge = function(matchData)
 						timedOut = true,
 					}
 					broadcastPowerGaugeResult(matchData, PowerZones.Zones.MISS, 0, true)
+					-- Miss PRESENTATION (whiff/no-contact) - still one sequence, 0 damage
+					schedulePunchSequence(matchData, PowerZones.Zones.MISS, true)
 					print(string.format("[MatchService] Power gauge TIMEOUT for match %s -> Miss (stored for damage system)", matchData.matchId))
 				else
 					print(string.format("[MatchService] Power gauge resolved by lock for match %s", matchData.matchId))
@@ -763,6 +766,120 @@ local function broadcastPowerGaugeRejected(player: Player, matchId: string, reas
 	end
 end
 
+-- ============================================================================
+-- PUNCH RESULT RESOLUTION (server-authoritative)
+-- The SERVER-selected power result (matchData.powerGaugeResult.zone) determines
+-- the presentation AND the damage. Visual effects NEVER determine the game result.
+-- MATCH HEALTH is stored server-side, separate from Roblox Humanoid health
+-- (Humanoid.Health is NEVER modified in this phase).
+-- ============================================================================
+
+-- Fired at the PUNCH MOMENT (= official reveal) to ALL match clients:
+-- (matchId, zone, puncherUserId, targetUserId, timedOut). Presentation choice is the
+-- client's job; the zone it must present comes from the SERVER.
+local function broadcastPunchSequence(matchData, zone: string, timedOut: boolean)
+	local re = remotes.PunchSequence
+	if not re then return end
+	for _, player in pairs(matchData.playerInstances) do
+		if player and player.Parent then
+			re:FireClient(player, matchData.matchId, zone, matchData.puncherUserId, matchData.targetUserId, timedOut)
+		end
+	end
+end
+
+-- (matchId, targetUserId, health, maxHealth, lastDamage, lastZone) to ALL match clients.
+local function broadcastTargetHealth(matchData, lastDamage: number, lastZone: string)
+	local re = remotes.TargetHealthUpdate
+	if not re then return end
+	local maxHealth = Config.StartingHealth or 100
+	for _, player in pairs(matchData.playerInstances) do
+		if player and player.Parent then
+			re:FireClient(player, matchData.matchId, matchData.targetUserId, matchData.targetHealth or maxHealth, maxHealth, lastDamage, lastZone)
+		end
+	end
+end
+
+-- Applies damage ONLY after a valid punch result (locked gauge -> stored zone).
+-- Never accepts client-provided damage. Prevents duplicate damage via damageApplied flag.
+-- Clamps health at zero. Detects zero health -> mark Target knocked out + PAUSE
+-- (full elimination flow is FUTURE - deliberately not implemented here).
+local function applyPunchDamage(matchData)
+	if not MatchService.Matches[matchData.matchId] then return end
+	if matchData.damageApplied then
+		print("[MatchService] Duplicate damage prevented for match " .. matchData.matchId)
+		return
+	end
+	local result = matchData.powerGaugeResult
+	if not result then
+		print("[MatchService] No valid punch result, damage skipped for match " .. matchData.matchId)
+		return
+	end
+	local targetPlayer = matchData.players[matchData.targetUserId]
+	if not targetPlayer then
+		print("[MatchService] Target gone, damage skipped for match " .. matchData.matchId)
+		return
+	end
+
+	local zone = result.zone
+	local damage = (Config.Damage and Config.Damage[zone]) or 0
+	matchData.damageApplied = true
+
+	-- MATCH health (separate from Humanoid health). Clamp at zero.
+	matchData.targetHealth = math.max(0, (matchData.targetHealth or Config.StartingHealth or 100) - damage)
+	print(string.format("[MatchService] DAMAGE match %s: Target %d takes %d (%s) -> health %d/%d (Humanoid health untouched)",
+		matchData.matchId, matchData.targetUserId, damage, zone, matchData.targetHealth, Config.StartingHealth or 100))
+	broadcastTargetHealth(matchData, damage, zone)
+
+	-- Detect zero health -> mark knocked out + pause
+	if matchData.targetHealth <= 0 then
+		matchData.targetKnockedOut = true
+		if MatchStates.CanTransition(matchData.state, MatchStates.States.KNOCKED_OUT) then
+			matchData.state = MatchStates.States.KNOCKED_OUT
+		end
+		broadcastMatchState(matchData)
+		print(string.format("[MatchService] TARGET KNOCKED OUT in match %s (health 0) - PAUSED, marked only. Full elimination flow is FUTURE (not implemented).", matchData.matchId))
+	end
+end
+
+-- Schedules the visual punch sequence timing SERVER-side (prep -> punch -> contact).
+-- One sequence per punch result (sequenceFired guard prevents repeated triggering).
+-- If the match ends or puncher/target disconnects mid-schedule, sequenceCancelled stops it
+-- and clients clean their effects.
+schedulePunchSequence = function(matchData, zone: string, timedOut: boolean)
+	if not Config.PunchSequenceEnabled then return end
+	if not MatchService.Matches[matchData.matchId] then return end
+	if matchData.sequenceFired then
+		print("[MatchService] Punch sequence already fired for match " .. matchData.matchId .. " - repeat prevented")
+		return
+	end
+	matchData.sequenceFired = true
+
+	task.spawn(function()
+		local prepTime = Config.PunchSequencePrepTime or 0.6
+		local contactTime = Config.PunchSequenceContactTime or 0.35
+
+		task.wait(prepTime)
+		if not MatchService.Matches[matchData.matchId] or matchData.sequenceCancelled then return end
+		broadcastPunchSequence(matchData, zone, timedOut)
+		print(string.format("[MatchService] Punch sequence FIRED for match %s: zone=%s timedOut=%s (prep %.2fs, contact in %.2fs)",
+			matchData.matchId, zone, tostring(timedOut), prepTime, contactTime))
+
+		task.wait(contactTime)
+		if not MatchService.Matches[matchData.matchId] or matchData.sequenceCancelled then
+			print("[MatchService] Punch sequence cancelled before contact for match " .. matchData.matchId)
+			return
+		end
+		-- Damage ONLY after a valid (locked) punch result. Timed-out Miss = no punch contact, no damage.
+		if timedOut or zone == PowerZones.Zones.MISS then
+			print("[MatchService] Miss punch sequence for match " .. matchData.matchId .. " - 0 damage, no contact")
+			matchData.damageApplied = true -- consume the result: no further damage possible
+			broadcastTargetHealth(matchData, 0, PowerZones.Zones.MISS)
+		else
+			applyPunchDamage(matchData)
+		end
+	end)
+end
+
 -- Entry point for RE_PowerGaugeStopRequest. Client may send extra args (power/zone claims)
 -- - they are IGNORED. Server computes needle position and zone from the SERVER clock,
 -- so a client can NEVER claim Perfect (or any zone).
@@ -816,6 +933,10 @@ function MatchService.TryLockPowerGauge(player: Player, matchId: any, ...): (boo
 	broadcastMatchState(matchData) -- state stays PowerGauge; payload contains NO gauge/zone data
 	print(string.format("[MatchService] Gauge LOCKED for match %s by %s (%d): zone=%s position=%.3f (server-calculated)",
 		matchData.matchId, player.Name, player.UserId, zone, position))
+
+	-- PUNCH SEQUENCE + DAMAGE: the SERVER-selected zone drives the presentation and,
+	-- at contact time, the server-applied damage. Client visuals never determine the result.
+	schedulePunchSequence(matchData, zone, false)
 	return true, zone
 end
 
@@ -880,7 +1001,13 @@ function MatchService.CreateMatchFromQueue(slotId: string, playerUserIds: {numbe
 		activePlayers = #playerUserIds,
 		punchSelectionEndTick = nil,
 		powerGauge = nil, -- active gauge: {startServerTime, endServerTime, sweepDuration, locked, resolved, cancelled, lockRequestCount, lastLockRequestTick}
-		powerGaugeResult = nil, -- stored for future damage system: {zone, position, lockedTick, serverTime, timedOut, puncherUserId} - SERVER-INTERNAL, never broadcast before damage
+		powerGaugeResult = nil, -- stored for damage system: {zone, position, lockedTick, serverTime, timedOut, puncherUserId} - SERVER-INTERNAL, never broadcast before damage
+		-- TARGET MATCH HEALTH (separate from Roblox Humanoid health - Humanoid.Health is NEVER modified)
+		targetHealth = Config.StartingHealth or 100, -- reset for every new match (fresh matchData)
+		targetKnockedOut = false, -- marked when health reaches 0; full elimination flow is FUTURE
+		damageApplied = false, -- prevents duplicate damage per punch result
+		sequenceFired = false, -- prevents repeated punch sequence triggering
+		sequenceCancelled = false, -- set on match end / disconnect mid-sequence
 	}
 
 	for i, userId in ipairs(playerUserIds) do
@@ -1022,6 +1149,9 @@ function MatchService.EndMatch(matchId: string, reason: string)
 	-- Cleanup active power gauge (timeout loop exits via Matches[matchId] check + resolved flag)
 	cancelPowerGauge(matchData, "Match ended: " .. reason)
 
+	-- Cleanup pending punch sequence + damage (clients also clean their visual effects on MatchEnd)
+	matchData.sequenceCancelled = true
+
 	matchData.state = MatchStates.States.FINISHED
 	broadcastMatchState(matchData)
 	broadcastMatchEnd(matchData, reason)
@@ -1073,6 +1203,8 @@ function MatchService.HandlePlayerLeaving(userId: number, reason: string)
 		-- POWER GAUGE: cancel active gauge and discard stored result (no puncher, no damage)
 		cancelPowerGauge(matchData, "Puncher disconnected")
 		matchData.powerGaugeResult = nil
+		-- PUNCH SEQUENCE: cancel pending sequence/damage if puncher leaves mid-animation
+		matchData.sequenceCancelled = true
 		matchData.puncherUserId = nil
 		matchData.puncherSelectedTick = nil
 		matchData.puncherPreparationEndTick = nil
@@ -1153,6 +1285,14 @@ function MatchService.HandlePlayerLeaving(userId: number, reason: string)
 				if newTargetPlayer and matchData.arenaModel then
 					teleportToTargetStand(newTargetPlayer, matchData.arenaModel)
 				end
+				-- NEW TARGET: reset match health for the new Target, clear knockout/damage/sequence state
+				matchData.sequenceCancelled = true -- cancel any pending punch sequence from the old round
+				matchData.targetHealth = Config.StartingHealth or 100
+				matchData.targetKnockedOut = false
+				matchData.damageApplied = false
+				matchData.sequenceFired = false
+				matchData.powerGaugeResult = nil
+				broadcastTargetHealth(matchData, 0, "Reset")
 				-- Reset to WaitingForPuncher
 				matchData.state = MatchStates.States.WAITING_FOR_PUNCHER
 				matchData.punchSelectionEndTick = tick() + (Config.PunchSelectionDuration or 15)
@@ -1193,6 +1333,8 @@ function MatchService.Init()
 			"RE_PowerGaugeStopRequest",
 			"RE_PowerGaugeRejected",
 			"RE_PowerGaugeResult",
+			"RE_PunchSequence",
+			"RE_TargetHealthUpdate",
 		})
 	end
 
@@ -1211,6 +1353,8 @@ function MatchService.Init()
 		remotes.PowerGaugeStopRequest = remotesFolder:FindFirstChild("RE_PowerGaugeStopRequest")
 		remotes.PowerGaugeRejected = remotesFolder:FindFirstChild("RE_PowerGaugeRejected")
 		remotes.PowerGaugeResult = remotesFolder:FindFirstChild("RE_PowerGaugeResult")
+		remotes.PunchSequence = remotesFolder:FindFirstChild("RE_PunchSequence")
+		remotes.TargetHealthUpdate = remotesFolder:FindFirstChild("RE_TargetHealthUpdate")
 	end
 
 	-- Handle PunchRequest from clients: client must send only Punch request, not winner/timestamp/damage/power/role
@@ -1307,8 +1451,9 @@ function MatchService.Init()
 		end)
 	end
 
-	print("[MatchService] Initialized - Puncher selection + server-authoritative power gauge ready")
-	print("[MatchService] States: Preparing, SelectingTarget, WaitingForPuncher, Punching (prep), PowerGauge (holds after lock), Guessing (future), Resolving (future), Eliminated, Finished")
+	print("[MatchService] Initialized - Puncher selection + power gauge + punch sequence + Target match health ready")
+	print("[MatchService] States: Preparing, SelectingTarget, WaitingForPuncher, Punching (prep), PowerGauge, KnockedOut (paused, marked), Guessing (future), Resolving (future), Eliminated, Finished")
+	print("[MatchService] Damage: Miss 0 / Weak " .. tostring(Config.Damage and Config.Damage.Weak) .. " / Normal " .. tostring(Config.Damage and Config.Damage.Normal) .. " / Strong " .. tostring(Config.Damage and Config.Damage.Strong) .. " / Perfect " .. tostring(Config.Damage and Config.Damage.Perfect) .. " (instant KO)")
 end
 
 return MatchService

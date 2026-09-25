@@ -35,7 +35,10 @@ RemoteNames.Match = {
 	PowerGaugeStopRequest = "RE_PowerGaugeStopRequest", -- Client -> Server LOCK request: matchId ONLY. No power value, no zone claim, no timestamp
 	PowerGaugeRejected = "RE_PowerGaugeRejected", -- Server -> Client (matchId, reason) e.g. Already locked / Too early / Too late / Not the Puncher / Rate limited
 	PowerGaugeResult = "RE_PowerGaugeResult", -- Server -> PUNCHER ONLY (matchId, zone, position, timedOut); zone computed by SERVER
-	-- Future: damage, guessing, knockout, scoring (not implemented yet)
+	-- Punch sequence + Target health (implemented in this phase)
+	PunchSequence = "RE_PunchSequence", -- Server -> ALL match clients at the punch moment (matchId, zone, puncherUserId, targetUserId, timedOut); punch moment = official reveal; SERVER zone determines presentation, visuals never determine result
+	TargetHealthUpdate = "RE_TargetHealthUpdate", -- Server -> ALL match clients (matchId, targetUserId, health, maxHealth, lastDamage, lastZone); match health is SERVER-INTERNAL and separate from Roblox Humanoid health
+	-- Future: damage application to character, guessing, knockout flow, scoring (not implemented yet)
 	DamageApplied = "RE_DamageApplied",
 	GuessOpen = "RE_GuessOpen",
 	GuessRequest = "RE_GuessRequest",

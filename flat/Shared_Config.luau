@@ -95,6 +95,26 @@ Config.MissDamage = 0
 Config.PerfectIsInstantKO = true
 
 -- ============================================================================
+-- PUNCH SEQUENCE PRESENTATION (Phase: visual punch sequence ONLY - visuals never determine game result)
+-- ============================================================================
+Config.PunchSequenceEnabled = true
+Config.PunchSequencePrepTime = 0.6 -- seconds: puncher preparation placeholder before punch (server-scheduled)
+Config.PunchSequenceContactTime = 0.35 -- seconds: punch start -> impact; SERVER applies damage at contact (server clock)
+-- PLACEHOLDER ASSETS - no real asset IDs have been provided. These are deliberately invalid
+-- placeholders (clearly marked). Replace ONLY when the user supplies real asset IDs.
+Config.PunchAnimPrepId = "rbxassetid://0" -- PLACEHOLDER preparation animation (replace when provided)
+Config.PunchAnimPunchId = "rbxassetid://0" -- PLACEHOLDER punch animation (replace when provided)
+Config.PunchSoundId = "rbxassetid://0" -- PLACEHOLDER impact sound (replace when provided)
+-- Camera shake intensity for the TARGET by zone (0 = none). Presentation only.
+Config.PunchCameraShakeByZone = {
+	Miss = 0,
+	Weak = 0.15,
+	Normal = 0.3,
+	Strong = 0.55,
+	Perfect = 0.9,
+}
+
+-- ============================================================================
 -- TARGET CAMERA & VISIBILITY (Phase: Target camera and visibility system only)
 -- ============================================================================
 Config.TargetCameraEnabled = true

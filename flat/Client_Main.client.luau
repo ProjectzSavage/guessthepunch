@@ -28,6 +28,7 @@ local TargetCameraService = nil
 local TargetVisibilityService = nil
 local PuncherSelectionService = nil
 local PowerGaugeService = nil
+local PunchSequenceService = nil
 
 local function loadClientServices()
 	local servicesFolder = script:FindFirstChild("Services")
@@ -55,6 +56,7 @@ local function loadClientServices()
 		local visMod = servicesFolder:FindFirstChild("TargetVisibilityService")
 		local punchMod = servicesFolder:FindFirstChild("PuncherSelectionService")
 		local gaugeMod = servicesFolder:FindFirstChild("PowerGaugeService")
+		local seqMod = servicesFolder:FindFirstChild("PunchSequenceService")
 		if camMod then
 			local ok, mod = pcall(require, camMod)
 			if ok then TargetCameraService = mod else warn("[Client] Failed to require TargetCameraService: " .. tostring(mod)) end
@@ -71,8 +73,12 @@ local function loadClientServices()
 			local ok, mod = pcall(require, gaugeMod)
 			if ok then PowerGaugeService = mod else warn("[Client] Failed to require PowerGaugeService: " .. tostring(mod)) end
 		end
+		if seqMod then
+			local ok, mod = pcall(require, seqMod)
+			if ok then PunchSequenceService = mod else warn("[Client] Failed to require PunchSequenceService: " .. tostring(mod)) end
+		end
 	else
-		warn("[Client] Services folder not found - create StarterPlayerScripts/GuessThePuncherClient/Services with TargetCameraService, TargetVisibilityService, PuncherSelectionService, PowerGaugeService")
+		warn("[Client] Services folder not found - create StarterPlayerScripts/GuessThePuncherClient/Services with TargetCameraService, TargetVisibilityService, PuncherSelectionService, PowerGaugeService, PunchSequenceService")
 	end
 end
 
@@ -144,14 +150,18 @@ local function applyPuncherState()
 	if PowerGaugeService then
 		PowerGaugeService.UpdateState(currentMatchId, currentRole, currentState)
 	end
+	if PunchSequenceService then
+		PunchSequenceService.UpdateState(currentMatchId, currentRole, currentState)
+	end
 end
 
 local function restoreAll()
-	print("[Client] Restoring camera, visibility, puncher and gauge state - match ended")
+	print("[Client] Restoring camera, visibility, puncher, gauge and sequence state - match ended")
 	if TargetCameraService then TargetCameraService.Restore() end
 	if TargetVisibilityService then TargetVisibilityService.Restore() end
 	if PuncherSelectionService then PuncherSelectionService.HandleMatchEnd() end
 	if PowerGaugeService then PowerGaugeService.HandleMatchEnd() end
+	if PunchSequenceService then PunchSequenceService.HandleMatchEnd() end
 	currentMatchId = nil
 	currentRole = nil
 	currentState = nil
@@ -165,6 +175,7 @@ if TargetCameraService and TargetCameraService.Init then TargetCameraService.Ini
 if TargetVisibilityService and TargetVisibilityService.Init then TargetVisibilityService.Init() end
 if PuncherSelectionService and PuncherSelectionService.Init then PuncherSelectionService.Init() end
 if PowerGaugeService and PowerGaugeService.Init then PowerGaugeService.Init() end
+if PunchSequenceService and PunchSequenceService.Init then PunchSequenceService.Init() end
 
 local remotesFolder = ReplicatedStorage:WaitForChild("Remotes", 10)
 if not remotesFolder then
@@ -287,8 +298,9 @@ Players.PlayerRemoving:Connect(function(leavingPlayer)
 	end
 end)
 
-print("[GuessThePuncherClient] Ready - Queue + Match + Target Camera/Visibility + Puncher Selection + Power Gauge")
+print("[GuessThePuncherClient] Ready - Queue + Match + Target Camera/Visibility + Puncher Selection + Power Gauge + Punch Sequence/Health")
 print("  Join queue: RE_QueueJoinRequest:FireServer('Slot2') or walk onto EntryArea")
 print("  When PotentialPuncher in WaitingForPuncher: Press F to request Punch (or RE_PunchRequest:FireServer(matchId))")
 print("  First valid server-accepted becomes Puncher, moved behind Target, preparation " .. tostring(Config and Config.PuncherPreparationTime or 3) .. "s")
 print("  When Puncher in PowerGauge: gauge needle moves (reverses at ends), Press E to LOCK (sends matchId only, server decides zone)")
+print("  After lock: punch sequence placeholders, cartoon impact by zone, Target camera shake, server damage (Weak 10/Normal 25/Strong 50/Perfect 100 KO/Miss 0)")
