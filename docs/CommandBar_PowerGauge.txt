@@ -1,0 +1,111 @@
+-- CommandBar_PowerGauge.txt
+-- Paste into Roblox Studio Command Bar (View > Command Bar) and run ONCE.
+-- Creates objects for the server-authoritative Power Gauge phase. You then paste code from GitHub.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local StarterPlayer = game:GetService("StarterPlayer")
+
+local function ensureFolder(parent, name)
+	local f = parent:FindFirstChild(name)
+	if not f then
+		f = Instance.new("Folder")
+		f.Name = name
+		f.Parent = parent
+		print("Created Folder: " .. parent:GetFullName() .. "." .. name)
+	end
+	return f
+end
+
+local function ensureModule(parent, name)
+	local m = parent:FindFirstChild(name)
+	if not m then
+		m = Instance.new("ModuleScript")
+		m.Name = name
+		m.Parent = parent
+		print("Created ModuleScript: " .. parent:GetFullName() .. "." .. name)
+	end
+	return m
+end
+
+local function ensureRemote(parent, name)
+	local r = parent:FindFirstChild(name)
+	if not r then
+		r = Instance.new("RemoteEvent")
+		r.Name = name
+		r.Parent = parent
+		print("Created RemoteEvent: " .. parent:GetFullName() .. "." .. name)
+	end
+	return r
+end
+
+-- Shared modules (paste code into these)
+local Shared = ensureFolder(ReplicatedStorage, "Shared")
+ensureModule(Shared, "Config")
+ensureModule(Shared, "PowerZones")
+ensureModule(Shared, "MatchStates")
+ensureModule(Shared, "RemoteNames")
+
+-- Remotes (also auto-created by MatchService.Init if missing)
+local Remotes = ensureFolder(ReplicatedStorage, "Remotes")
+ensureRemote(Remotes, "RE_PowerGaugeOpen")
+ensureRemote(Remotes, "RE_PowerGaugeStopRequest")
+ensureRemote(Remotes, "RE_PowerGaugeRejected")
+ensureRemote(Remotes, "RE_PowerGaugeResult")
+-- Previous phase remotes (ensure still present)
+ensureRemote(Remotes, "RE_MatchStart")
+ensureRemote(Remotes, "RE_MatchStateUpdate")
+ensureRemote(Remotes, "RE_MatchEnd")
+ensureRemote(Remotes, "RE_RoleAssigned")
+ensureRemote(Remotes, "RE_TargetSelected")
+ensureRemote(Remotes, "RE_PunchRequest")
+ensureRemote(Remotes, "RE_PunchRejected")
+ensureRemote(Remotes, "RE_PuncherSelected")
+ensureRemote(Remotes, "RE_PuncherPreparation")
+ensureRemote(Remotes, "RE_QueueJoinRequest")
+ensureRemote(Remotes, "RE_QueueLeaveRequest")
+ensureRemote(Remotes, "RE_QueueStateUpdate")
+ensureRemote(Remotes, "RE_QueueCountdownUpdate")
+ensureRemote(Remotes, "RE_QueueLocked")
+ensureRemote(Remotes, "RE_QueueStarted")
+ensureRemote(Remotes, "RE_QueuePlayerLeft")
+
+-- Server services
+local Services = ensureFolder(ServerScriptService, "Services")
+ensureModule(Services, "MatchService")
+ensureModule(Services, "RemoteService")
+ensureModule(Services, "QueueService")
+
+-- Client
+local StarterPlayerScripts = StarterPlayer:FindFirstChild("StarterPlayerScripts")
+if not StarterPlayerScripts then
+	StarterPlayerScripts = Instance.new("StarterPlayerScripts")
+	StarterPlayerScripts.Name = "StarterPlayerScripts"
+	StarterPlayerScripts.Parent = StarterPlayer
+	print("Created StarterPlayerScripts")
+end
+local ClientRoot = StarterPlayerScripts:FindFirstChild("GuessThePuncherClient")
+if not ClientRoot then
+	ClientRoot = Instance.new("LocalScript")
+	ClientRoot.Name = "GuessThePuncherClient"
+	ClientRoot.Parent = StarterPlayerScripts
+	print("Created LocalScript: GuessThePuncherClient")
+end
+local ClientServices = ensureFolder(ClientRoot, "Services")
+ensureModule(ClientServices, "TargetCameraService")
+ensureModule(ClientServices, "TargetVisibilityService")
+ensureModule(ClientServices, "PuncherSelectionService")
+ensureModule(ClientServices, "PowerGaugeService")
+
+print("=== Power Gauge setup objects ready ===")
+print("Paste code (no .luau extension in Studio names):")
+print("1. flat/Shared_Config.luau           -> ReplicatedStorage.Shared.Config")
+print("2. flat/Shared_PowerZones.luau       -> ReplicatedStorage.Shared.PowerZones")
+print("3. flat/Shared_MatchStates.luau      -> ReplicatedStorage.Shared.MatchStates")
+print("4. flat/Shared_RemoteNames.luau      -> ReplicatedStorage.Shared.RemoteNames")
+print("5. flat/Server_MatchService.luau     -> ServerScriptService.Services.MatchService")
+print("6. flat/Client_Main.client.luau      -> StarterPlayerScripts.GuessThePuncherClient")
+print("7. flat/Client_PowerGaugeService.luau-> StarterPlayerScripts.GuessThePuncherClient.Services.PowerGaugeService")
+print("Test: 2+ clients join Slot2, press F as PotentialPuncher, prep 3s, gauge opens on Puncher screen only,")
+print("needle ping-pongs, press E to LOCK (matchId only). Server calculates zone. Timeout -> Miss.")
+print("NO new Workspace objects needed for this phase.")

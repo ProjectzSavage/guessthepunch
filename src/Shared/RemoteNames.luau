@@ -30,10 +30,12 @@ RemoteNames.Match = {
 	PunchRejected = "RE_PunchRejected", -- Server -> Client, reason for rejection
 	PuncherSelected = "RE_PuncherSelected", -- Server -> Client, filtered (Target does NOT get puncherUserId before reveal)
 	PuncherPreparation = "RE_PuncherPreparation", -- Server -> Client, preparation countdown
-	-- Future: power, damage, guessing, knockout, scoring (not implemented yet)
-	PowerGaugeOpen = "RE_PowerGaugeOpen",
-	PowerGaugeStopRequest = "RE_PowerGaugeStopRequest",
-	PowerGaugeResult = "RE_PowerGaugeResult",
+	-- Power gauge phase (implemented in this phase)
+	PowerGaugeOpen = "RE_PowerGaugeOpen", -- Server -> PUNCHER ONLY (matchId, startServerTime, duration, sweepDuration); startServerTime is server-controlled
+	PowerGaugeStopRequest = "RE_PowerGaugeStopRequest", -- Client -> Server LOCK request: matchId ONLY. No power value, no zone claim, no timestamp
+	PowerGaugeRejected = "RE_PowerGaugeRejected", -- Server -> Client (matchId, reason) e.g. Already locked / Too early / Too late / Not the Puncher / Rate limited
+	PowerGaugeResult = "RE_PowerGaugeResult", -- Server -> PUNCHER ONLY (matchId, zone, position, timedOut); zone computed by SERVER
+	-- Future: damage, guessing, knockout, scoring (not implemented yet)
 	DamageApplied = "RE_DamageApplied",
 	GuessOpen = "RE_GuessOpen",
 	GuessRequest = "RE_GuessRequest",

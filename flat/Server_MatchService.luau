@@ -1,6 +1,6 @@
 --!nonstrict
 -- MatchService.luau
--- Purpose: Implements queue handoff + Target selection + Puncher selection phase ONLY
+-- Purpose: Implements queue handoff + Target selection + Puncher selection + server-authoritative Power gauge ONLY
 -- Implements:
 -- - Assign queued players to unique match
 -- - Move them into correct arena
@@ -12,9 +12,13 @@
 -- - Move Puncher to controlled position behind Target
 -- - Prevent Puncher from freely leaving designated position
 -- - Give Puncher short preparation period
+-- - Power gauge phase: server starts gauge with server-controlled timestamp, needle ping-pongs,
+--   Puncher sends LOCK request (matchId ONLY, no power/zone/timestamp), server calculates zone
+--   from SERVER clock, accepts only one lock, rejects duplicate/early/late/invalid requests,
+--   stores result for future damage system, timeout -> Miss, handles disconnect
 -- - Handle duplicate requests, spam, rate limits, disconnects
 -- - End safely if <2 active or Target invalid
--- Does NOT implement: power gauge, damage, guessing, knockout, scoring, monetization, final GUI
+-- Does NOT implement: damage application, guessing, knockout, scoring, monetization, final animations, final GUI
 -- Roblox Studio Destination: ServerScriptService > Services > MatchService (ModuleScript)
 
 local Players = game:GetService("Players")
@@ -30,9 +34,12 @@ MatchService.ArenasInUse = {} -- [arenaName] = matchId
 local Config
 local MatchStates
 local Roles
+local PowerZones
 local RemoteService
 
 local remotes = {}
+
+local startPowerGauge -- forward declaration, defined in POWER GAUGE section below
 
 -- ============================================================================
 -- HELPERS
@@ -226,6 +233,12 @@ local function buildFilteredPayload(matchData, forPlayerUserId: number)
 			payload.puncherPreparationTimeLeft = timeLeft
 		end
 	end
+
+	-- POWER GAUGE DATA MUST NEVER APPEAR IN STATE PAYLOADS:
+	-- no gauge timing (startServerTime/duration/sweep), no needle position, no zone/power result.
+	-- Gauge timing goes ONLY to the Puncher via RE_PowerGaugeOpen,
+	-- zone result goes ONLY to the Puncher via RE_PowerGaugeResult.
+	-- matchData.powerGaugeResult (stored for future damage system) is server-internal only.
 
 	return payload
 end
@@ -508,9 +521,13 @@ local function selectPuncher(matchData, puncherPlayer: Player): boolean
 			local timeLeft = math.max(0, endTick - now)
 			broadcastPuncherPreparation(matchData, timeLeft)
 			if timeLeft <= 0 then
-				print(string.format("[MatchService] Puncher preparation over for match %s, Puncher %d ready for future power gauge", matchData.matchId, matchData.puncherUserId))
-				-- For this phase, we stop here at Punching state, waiting for future power gauge system
-				-- Future: would transition to power gauge
+				print(string.format("[MatchService] Puncher preparation over for match %s, Puncher %d - starting power gauge", matchData.matchId, matchData.puncherUserId))
+				-- POWER GAUGE PHASE: start server-authoritative gauge after preparation
+				if MatchService.Matches[matchData.matchId]
+					and matchData.puncherUserId
+					and matchData.state == MatchStates.States.PUNCHING then
+					startPowerGauge(matchData)
+				end
 				break
 			end
 			task.wait(0.5)
@@ -562,6 +579,244 @@ function MatchService.TryBecomePuncher(player: Player, matchId: string): (boolea
 	else
 		return false, "Failed to select Puncher"
 	end
+end
+
+-- ============================================================================
+-- POWER GAUGE (server-authoritative; stores result for future damage system)
+-- Client may display the gauge but must NOT send the final power value.
+-- Client sends ONLY the lock request (matchId). Server calculates zone from SERVER clock.
+-- ============================================================================
+
+local function cancelPowerGauge(matchData, reason: string)
+	if matchData.powerGauge and not matchData.powerGauge.resolved then
+		matchData.powerGauge.resolved = true
+		matchData.powerGauge.cancelled = true
+		print(string.format("[MatchService] Power gauge CANCELLED for match %s: %s", matchData.matchId, reason))
+	end
+	matchData.powerGauge = nil
+end
+
+local function firePowerGaugeOpen(matchData, gauge)
+	local re = remotes.PowerGaugeOpen
+	if not re then return end
+	local puncher = matchData.players[matchData.puncherUserId]
+	if puncher and puncher.Parent then
+		-- Server-controlled timestamp. Fired to the PUNCHER ONLY:
+		-- Target and other players never receive gauge timing (anti-cheat filtering).
+		re:FireClient(puncher, matchData.matchId, gauge.startServerTime, gauge.endServerTime - gauge.startServerTime, gauge.sweepDuration)
+	end
+end
+
+local function broadcastPowerGaugeResult(matchData, zone: string, position: number, timedOut: boolean)
+	local re = remotes.PowerGaugeResult
+	if not re then return end
+	local puncher = matchData.players[matchData.puncherUserId]
+	if puncher and puncher.Parent then
+		-- Result goes to the PUNCHER ONLY. Target and others get nothing
+		-- (power/zone info stays server-internal until future damage phase).
+		re:FireClient(puncher, matchData.matchId, zone, position, timedOut)
+	end
+end
+
+-- Starts the gauge using a server-controlled timestamp (workspace:GetServerTimeNow)
+startPowerGauge = function(matchData)
+	if not MatchService.Matches[matchData.matchId] then return end
+	if not matchData.puncherUserId then return end
+	local puncher = matchData.players[matchData.puncherUserId]
+	if not puncher or not puncher.Parent then return end
+	if matchData.state ~= MatchStates.States.PUNCHING then return end
+
+	local nowServer = workspace:GetServerTimeNow()
+	local duration = Config.PowerGaugeDuration or 5
+	local sweep = Config.PowerGaugeSweepDuration or 1.25
+	local gauge = {
+		startServerTime = nowServer, -- SERVER-controlled timestamp
+		endServerTime = nowServer + duration,
+		sweepDuration = sweep,
+		locked = false, -- accept only ONE lock
+		resolved = false,
+		cancelled = false,
+		lockRequestCount = 0,
+		lastLockRequestTick = 0,
+	}
+	matchData.powerGauge = gauge
+	matchData.state = MatchStates.States.POWER_GAUGE
+	broadcastMatchState(matchData) -- filtered payload contains NO gauge data
+	firePowerGaugeOpen(matchData, gauge)
+	print(string.format("[MatchService] Power gauge STARTED for match %s, puncher %s (%d), window %.2fs, sweep %.2fs, startServerTime=%.3f",
+		matchData.matchId, puncher.Name, puncher.UserId, duration, sweep, nowServer))
+
+	-- Server timeout loop: no valid lock by endServerTime + grace -> Miss (stored for damage system)
+	task.spawn(function()
+		local grace = Config.PowerGaugeLockLateGrace or 0.15
+		while MatchService.Matches[matchData.matchId] and not gauge.resolved and not gauge.cancelled do
+			if workspace:GetServerTimeNow() >= gauge.endServerTime + grace then
+				gauge.resolved = true
+				if not gauge.locked then
+					-- TIMEOUT -> Miss
+					matchData.powerGaugeResult = {
+						zone = PowerZones.Zones.MISS,
+						position = 0,
+						lockedTick = tick(),
+						timedOut = true,
+					}
+					broadcastPowerGaugeResult(matchData, PowerZones.Zones.MISS, 0, true)
+					print(string.format("[MatchService] Power gauge TIMEOUT for match %s -> Miss (stored for damage system)", matchData.matchId))
+				else
+					print(string.format("[MatchService] Power gauge resolved by lock for match %s", matchData.matchId))
+				end
+				break
+			end
+			task.wait(0.05)
+		end
+	end)
+end
+
+-- Validates a lock request. Server must reject duplicate, early, late and invalid requests.
+local function validateGaugeLockRequest(player: Player, matchId: string, matchData): (boolean, string)
+	-- 1. Player identity
+	if not player or not player.Parent then
+		return false, "Invalid player identity"
+	end
+	if not Players:GetPlayerByUserId(player.UserId) then
+		return false, "Player not found"
+	end
+
+	-- 2. Match identity
+	if type(matchId) ~= "string" then
+		return false, "Invalid match identity"
+	end
+	if matchData.matchId ~= matchId then
+		return false, "Match identity mismatch"
+	end
+	if MatchService.PlayersInMatch[player.UserId] ~= matchId then
+		return false, "Player not in this match"
+	end
+	if not matchData.players[player.UserId] then
+		return false, "Player not active in match"
+	end
+
+	-- 3. Active role: must be THE Puncher
+	if matchData.puncherUserId ~= player.UserId then
+		return false, "Not the Puncher"
+	end
+	if matchData.roles[player.UserId] ~= "Puncher" then
+		return false, "Not the Puncher"
+	end
+
+	-- 4. Current match state
+	if matchData.state ~= MatchStates.States.POWER_GAUGE then
+		return false, "Wrong state: " .. tostring(matchData.state) .. ", must be PowerGauge"
+	end
+
+	-- 5. Gauge exists and is active
+	local gauge = matchData.powerGauge
+	if not gauge then
+		return false, "No active gauge"
+	end
+	if gauge.cancelled then
+		return false, "Gauge cancelled"
+	end
+	if gauge.resolved then
+		return false, "Gauge already resolved"
+	end
+
+	-- 6. Duplicate: accept only ONE lock request
+	if gauge.locked then
+		return false, "Gauge already locked"
+	end
+
+	-- 7. Rate limits (anti-spam)
+	local nowTick = tick()
+	if nowTick - (gauge.lastLockRequestTick or 0) < (Config.PowerGaugeLockCooldown or 0.25) then
+		return false, "Rate limited"
+	end
+	gauge.lastLockRequestTick = nowTick
+	gauge.lockRequestCount = (gauge.lockRequestCount or 0) + 1
+	if gauge.lockRequestCount > (Config.PowerGaugeMaxLockRequests or 5) then
+		return false, "Too many lock requests"
+	end
+
+	-- 8. Alive status
+	if not isPlayerAlive(player) then
+		return false, "Player not alive"
+	end
+
+	-- 9. Timing (SERVER clock is authoritative; client timestamp is never trusted)
+	local nowServer = workspace:GetServerTimeNow()
+	local grace = Config.PowerGaugeLockLateGrace or 0.15
+	if nowServer < gauge.startServerTime - 0.1 then
+		return false, "Too early"
+	end
+	if nowServer > gauge.endServerTime + grace then
+		return false, "Too late"
+	end
+
+	return true, "Valid"
+end
+
+local function broadcastPowerGaugeRejected(player: Player, matchId: string, reason: string)
+	local re = remotes.PowerGaugeRejected
+	if not re then return end
+	if player and player.Parent then
+		re:FireClient(player, matchId, reason)
+	end
+end
+
+-- Entry point for RE_PowerGaugeStopRequest. Client may send extra args (power/zone claims)
+-- - they are IGNORED. Server computes needle position and zone from the SERVER clock,
+-- so a client can NEVER claim Perfect (or any zone).
+function MatchService.TryLockPowerGauge(player: Player, matchId: any, ...): (boolean, string)
+	-- ... = any client-sent extra args are deliberately ignored (never trusted)
+	local matchData = nil
+	if type(matchId) == "string" then
+		matchData = MatchService.Matches[matchId]
+	end
+	if not matchData then
+		local knownMatchId = MatchService.PlayersInMatch[player.UserId]
+		if knownMatchId then
+			matchData = MatchService.Matches[knownMatchId]
+		end
+	end
+	if not matchData then
+		broadcastPowerGaugeRejected(player, type(matchId) == "string" and matchId or "", "Match not found")
+		return false, "Match not found"
+	end
+
+	local ok, reason = validateGaugeLockRequest(player, matchData.matchId, matchData)
+	if not ok then
+		print(string.format("[MatchService] Gauge lock REJECTED for %s in match %s: %s", player.Name, matchData.matchId, reason))
+		broadcastPowerGaugeRejected(player, matchData.matchId, reason)
+		return false, reason
+	end
+
+	-- ACCEPT: one and only one lock. Calculate zone from SERVER clock.
+	local gauge = matchData.powerGauge
+	gauge.locked = true
+	gauge.resolved = true
+	gauge.lockedTick = tick()
+
+	local nowServer = workspace:GetServerTimeNow()
+	local maxElapsed = (gauge.endServerTime - gauge.startServerTime) + (Config.PowerGaugeLockLateGrace or 0.15)
+	local elapsed = math.clamp(nowServer - gauge.startServerTime, 0, maxElapsed)
+	local position = PowerZones.GetNeedlePosition(elapsed, gauge.sweepDuration)
+	local zone = PowerZones.GetZoneForPosition(position, Config.PowerGaugeZoneThresholds)
+
+	-- Store the result for the future damage system (server-internal, never broadcast to Target)
+	matchData.powerGaugeResult = {
+		zone = zone,
+		position = position,
+		lockedTick = tick(),
+		serverTime = nowServer,
+		timedOut = false,
+		puncherUserId = player.UserId,
+	}
+
+	broadcastPowerGaugeResult(matchData, zone, position, false)
+	broadcastMatchState(matchData) -- state stays PowerGauge; payload contains NO gauge/zone data
+	print(string.format("[MatchService] Gauge LOCKED for match %s by %s (%d): zone=%s position=%.3f (server-calculated)",
+		matchData.matchId, player.Name, player.UserId, zone, position))
+	return true, zone
 end
 
 -- ============================================================================
@@ -624,6 +879,8 @@ function MatchService.CreateMatchFromQueue(slotId: string, playerUserIds: {numbe
 		createdTick = tick(),
 		activePlayers = #playerUserIds,
 		punchSelectionEndTick = nil,
+		powerGauge = nil, -- active gauge: {startServerTime, endServerTime, sweepDuration, locked, resolved, cancelled, lockRequestCount, lastLockRequestTick}
+		powerGaugeResult = nil, -- stored for future damage system: {zone, position, lockedTick, serverTime, timedOut, puncherUserId} - SERVER-INTERNAL, never broadcast before damage
 	}
 
 	for i, userId in ipairs(playerUserIds) do
@@ -762,6 +1019,9 @@ function MatchService.EndMatch(matchId: string, reason: string)
 		matchData.puncherEnforceConn = nil
 	end
 
+	-- Cleanup active power gauge (timeout loop exits via Matches[matchId] check + resolved flag)
+	cancelPowerGauge(matchData, "Match ended: " .. reason)
+
 	matchData.state = MatchStates.States.FINISHED
 	broadcastMatchState(matchData)
 	broadcastMatchEnd(matchData, reason)
@@ -810,14 +1070,19 @@ function MatchService.HandlePlayerLeaving(userId: number, reason: string)
 			matchData.puncherEnforceConn:Disconnect()
 			matchData.puncherEnforceConn = nil
 		end
+		-- POWER GAUGE: cancel active gauge and discard stored result (no puncher, no damage)
+		cancelPowerGauge(matchData, "Puncher disconnected")
+		matchData.powerGaugeResult = nil
 		matchData.puncherUserId = nil
 		matchData.puncherSelectedTick = nil
 		matchData.puncherPreparationEndTick = nil
 		matchData.puncherPosition = nil
 		matchData.puncherLocked = false
-		-- Revert role to PotentialPuncher if still in match? But player left, so remove
-		-- For remaining players, if still in WaitingForPuncher or Punching, go back to WaitingForPuncher to allow new selection
-		if matchData.state == MatchStates.States.PUNCHING or matchData.state == MatchStates.States.WAITING_FOR_PUNCHER then
+		-- For remaining players, if in WaitingForPuncher, Punching (prep) or PowerGauge,
+		-- go back to WaitingForPuncher to allow new selection
+		if matchData.state == MatchStates.States.PUNCHING
+			or matchData.state == MatchStates.States.POWER_GAUGE
+			or matchData.state == MatchStates.States.WAITING_FOR_PUNCHER then
 			matchData.state = MatchStates.States.WAITING_FOR_PUNCHER
 			matchData.punchSelectionEndTick = tick() + (Config.PunchSelectionDuration or 15)
 			broadcastMatchState(matchData)
@@ -862,6 +1127,9 @@ function MatchService.HandlePlayerLeaving(userId: number, reason: string)
 						matchData.puncherEnforceConn:Disconnect()
 						matchData.puncherEnforceConn = nil
 					end
+					-- POWER GAUGE: cancel active gauge and discard result (Target changed)
+					cancelPowerGauge(matchData, "Target left, Puncher cleared")
+					matchData.powerGaugeResult = nil
 					local oldPuncherId = matchData.puncherUserId
 					matchData.puncherUserId = nil
 					matchData.puncherPosition = nil
@@ -905,6 +1173,7 @@ function MatchService.Init()
 	Config = require(Shared:WaitForChild("Config"))
 	MatchStates = require(Shared:WaitForChild("MatchStates"))
 	Roles = require(Shared:WaitForChild("Roles"))
+	PowerZones = require(Shared:WaitForChild("PowerZones"))
 
 	local ServicesFolder = script.Parent
 	local RemoteServiceMod = ServicesFolder:FindFirstChild("RemoteService")
@@ -920,6 +1189,10 @@ function MatchService.Init()
 			"RE_PunchRejected",
 			"RE_PuncherSelected",
 			"RE_PuncherPreparation",
+			"RE_PowerGaugeOpen",
+			"RE_PowerGaugeStopRequest",
+			"RE_PowerGaugeRejected",
+			"RE_PowerGaugeResult",
 		})
 	end
 
@@ -934,6 +1207,10 @@ function MatchService.Init()
 		remotes.PunchRejected = remotesFolder:FindFirstChild("RE_PunchRejected")
 		remotes.PuncherSelected = remotesFolder:FindFirstChild("RE_PuncherSelected")
 		remotes.PuncherPreparation = remotesFolder:FindFirstChild("RE_PuncherPreparation")
+		remotes.PowerGaugeOpen = remotesFolder:FindFirstChild("RE_PowerGaugeOpen")
+		remotes.PowerGaugeStopRequest = remotesFolder:FindFirstChild("RE_PowerGaugeStopRequest")
+		remotes.PowerGaugeRejected = remotesFolder:FindFirstChild("RE_PowerGaugeRejected")
+		remotes.PowerGaugeResult = remotesFolder:FindFirstChild("RE_PowerGaugeResult")
 	end
 
 	-- Handle PunchRequest from clients: client must send only Punch request, not winner/timestamp/damage/power/role
@@ -955,6 +1232,16 @@ function MatchService.Init()
 			MatchService.TryBecomePuncher(player, requestedMatchId)
 		end)
 		print("[MatchService] Listening to RE_PunchRequest")
+	end
+
+	-- Handle PowerGaugeStopRequest (gauge LOCK request): client must send ONLY matchId.
+	-- Any extra args (power value, zone claim, timestamp) are IGNORED - the server
+	-- calculates the zone from the SERVER clock, so a client can never claim Perfect.
+	if remotes.PowerGaugeStopRequest then
+		remotes.PowerGaugeStopRequest.OnServerEvent:Connect(function(player: Player, matchId: any, ...)
+			MatchService.TryLockPowerGauge(player, matchId, ...) -- extra args ignored inside
+		end)
+		print("[MatchService] Listening to RE_PowerGaugeStopRequest (gauge lock)")
 	end
 
 	Players.PlayerRemoving:Connect(function(player)
@@ -1020,8 +1307,8 @@ function MatchService.Init()
 		end)
 	end
 
-	print("[MatchService] Initialized - Puncher selection phase ready")
-	print("[MatchService] States: Preparing, SelectingTarget, WaitingForPuncher, Punching (prep), Guessing, Resolving, Eliminated, Finished")
+	print("[MatchService] Initialized - Puncher selection + server-authoritative power gauge ready")
+	print("[MatchService] States: Preparing, SelectingTarget, WaitingForPuncher, Punching (prep), PowerGauge (holds after lock), Guessing (future), Resolving (future), Eliminated, Finished")
 end
 
 return MatchService

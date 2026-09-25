@@ -1,11 +1,11 @@
 --!nonstrict
--- Main.client.luau - Queue + Match Setup + Target Camera/Visibility + Puncher Selection Client
--- Purpose: Listens to queue and match state, controls Target camera/visibility and Puncher request presentation only
--- Implements: Target camera/visibility + Puncher selection phase (first valid server-accepted becomes Puncher)
--- Server controls all roles and validation, client sends only Punch request (no winner/timestamp/damage/power/role)
--- Does NOT implement: power gauge, damage, guessing, knockout, scoring, monetization, final GUI
+-- Main.client.luau - Queue + Match Setup + Target Camera/Visibility + Puncher Selection + Power Gauge Client
+-- Purpose: Listens to queue and match state, controls Target camera/visibility, Puncher request presentation and power gauge display only
+-- Implements: Target camera/visibility + Puncher selection + server-authoritative power gauge display/lock input
+-- Server controls all roles, timing and validation. Client sends only Punch request and gauge LOCK request (matchId only)
+-- Does NOT implement: damage, guessing, knockout, scoring, monetization, final animations, final GUI
 -- Roblox Studio Destination: StarterPlayer > StarterPlayerScripts > GuessThePuncherClient (LocalScript)
--- Expected children: Services folder with TargetCameraService, TargetVisibilityService, PuncherSelectionService ModuleScripts
+-- Expected children: Services folder with TargetCameraService, TargetVisibilityService, PuncherSelectionService, PowerGaugeService ModuleScripts
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
@@ -27,6 +27,7 @@ end
 local TargetCameraService = nil
 local TargetVisibilityService = nil
 local PuncherSelectionService = nil
+local PowerGaugeService = nil
 
 local function loadClientServices()
 	local servicesFolder = script:FindFirstChild("Services")
@@ -53,6 +54,7 @@ local function loadClientServices()
 		local camMod = servicesFolder:FindFirstChild("TargetCameraService")
 		local visMod = servicesFolder:FindFirstChild("TargetVisibilityService")
 		local punchMod = servicesFolder:FindFirstChild("PuncherSelectionService")
+		local gaugeMod = servicesFolder:FindFirstChild("PowerGaugeService")
 		if camMod then
 			local ok, mod = pcall(require, camMod)
 			if ok then TargetCameraService = mod else warn("[Client] Failed to require TargetCameraService: " .. tostring(mod)) end
@@ -65,8 +67,12 @@ local function loadClientServices()
 			local ok, mod = pcall(require, punchMod)
 			if ok then PuncherSelectionService = mod else warn("[Client] Failed to require PuncherSelectionService: " .. tostring(mod)) end
 		end
+		if gaugeMod then
+			local ok, mod = pcall(require, gaugeMod)
+			if ok then PowerGaugeService = mod else warn("[Client] Failed to require PowerGaugeService: " .. tostring(mod)) end
+		end
 	else
-		warn("[Client] Services folder not found - create StarterPlayerScripts/GuessThePuncherClient/Services with TargetCameraService, TargetVisibilityService, PuncherSelectionService")
+		warn("[Client] Services folder not found - create StarterPlayerScripts/GuessThePuncherClient/Services with TargetCameraService, TargetVisibilityService, PuncherSelectionService, PowerGaugeService")
 	end
 end
 
@@ -135,13 +141,17 @@ local function applyPuncherState()
 	if PuncherSelectionService then
 		PuncherSelectionService.UpdateState(currentMatchId, currentRole, currentState, currentPuncherUserId ~= nil)
 	end
+	if PowerGaugeService then
+		PowerGaugeService.UpdateState(currentMatchId, currentRole, currentState)
+	end
 end
 
 local function restoreAll()
-	print("[Client] Restoring camera, visibility, puncher state - match ended")
+	print("[Client] Restoring camera, visibility, puncher and gauge state - match ended")
 	if TargetCameraService then TargetCameraService.Restore() end
 	if TargetVisibilityService then TargetVisibilityService.Restore() end
 	if PuncherSelectionService then PuncherSelectionService.HandleMatchEnd() end
+	if PowerGaugeService then PowerGaugeService.HandleMatchEnd() end
 	currentMatchId = nil
 	currentRole = nil
 	currentState = nil
@@ -154,6 +164,7 @@ end
 if TargetCameraService and TargetCameraService.Init then TargetCameraService.Init() end
 if TargetVisibilityService and TargetVisibilityService.Init then TargetVisibilityService.Init() end
 if PuncherSelectionService and PuncherSelectionService.Init then PuncherSelectionService.Init() end
+if PowerGaugeService and PowerGaugeService.Init then PowerGaugeService.Init() end
 
 local remotesFolder = ReplicatedStorage:WaitForChild("Remotes", 10)
 if not remotesFolder then
@@ -276,7 +287,8 @@ Players.PlayerRemoving:Connect(function(leavingPlayer)
 	end
 end)
 
-print("[GuessThePuncherClient] Ready - Queue + Match + Target Camera/Visibility + Puncher Selection")
+print("[GuessThePuncherClient] Ready - Queue + Match + Target Camera/Visibility + Puncher Selection + Power Gauge")
 print("  Join queue: RE_QueueJoinRequest:FireServer('Slot2') or walk onto EntryArea")
 print("  When PotentialPuncher in WaitingForPuncher: Press F to request Punch (or RE_PunchRequest:FireServer(matchId))")
 print("  First valid server-accepted becomes Puncher, moved behind Target, preparation " .. tostring(Config and Config.PuncherPreparationTime or 3) .. "s")
+print("  When Puncher in PowerGauge: gauge needle moves (reverses at ends), Press E to LOCK (sends matchId only, server decides zone)")

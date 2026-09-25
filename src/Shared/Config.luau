@@ -54,9 +54,28 @@ Config.PunchSpamThreshold = 3 -- max requests within window before temp block
 Config.PunchSpamWindow = 2 -- seconds window for spam detection
 
 -- ============================================================================
--- FUTURE: Power, Damage, Guessing, Knockout, Scoring (not implemented yet, but centralized)
+-- POWER GAUGE (Phase: server-authoritative Puncher power gauge ONLY - no damage)
 -- ============================================================================
-Config.PowerGaugeDuration = 5
+Config.PowerGaugeEnabled = true
+Config.PowerGaugeDuration = 5 -- total server-controlled lock window in seconds (server clock)
+Config.PowerGaugeSweepDuration = 1.25 -- seconds for ONE pass 0 -> 1 (needle reverses at ends, ping-pong)
+-- Needle position (0..1) IS the power level. Zone = position band (lower bounds, easy to adjust):
+Config.PowerGaugeZoneThresholds = {
+	Weak = 0, -- everything below Normal
+	Normal = 0.40,
+	Strong = 0.70,
+	Perfect = 0.90,
+	-- Miss is NOT on the track: it is the timeout / too-late zone only
+}
+Config.PowerGaugeLockLateGrace = 0.15 -- seconds after window end that a lock still counts (network latency tolerance)
+Config.PowerGaugeLockCooldown = 0.25 -- min seconds between lock requests (anti-spam, server-side)
+Config.PowerGaugeMaxLockRequests = 5 -- max lock requests per gauge before further requests rejected (anti-spam)
+Config.PowerGaugeShowDebugDisplay = true -- client builds a minimal on-screen gauge for testing (final GUI comes later)
+Config.PowerGaugeLockKey = Enum.KeyCode.E -- client lock input for testing (no final GUI yet)
+
+-- ============================================================================
+-- FUTURE: Damage, Guessing, Knockout, Scoring (NOT implemented yet, centralized only)
+-- ============================================================================
 Config.GuessingDuration = 15
 Config.KnockoutDuration = 3
 

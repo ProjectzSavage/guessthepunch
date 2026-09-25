@@ -7,12 +7,13 @@
 local MatchStates = {}
 
 -- Requested states for match setup system:
--- Preparing, SelectingTarget, WaitingForPuncher, Punching, Guessing, Resolving, Eliminated, Finished
+-- Preparing, SelectingTarget, WaitingForPuncher, Punching, PowerGauge, Guessing, Resolving, Eliminated, Finished
 MatchStates.States = {
 	PREPARING = "Preparing", -- Assigning players to unique match, moving to arena
 	SELECTING_TARGET = "SelectingTarget", -- Server-side logic selecting initial Target
-	WAITING_FOR_PUNCHER = "WaitingForPuncher", -- Waiting for puncher selection (future)
-	PUNCHING = "Punching", -- Future: punching phase
+	WAITING_FOR_PUNCHER = "WaitingForPuncher", -- Waiting for puncher selection
+	PUNCHING = "Punching", -- Puncher selected, preparation period
+	POWER_GAUGE = "PowerGauge", -- Server-authoritative power gauge running (puncher locks gauge)
 	GUESSING = "Guessing", -- Future: guessing phase
 	RESOLVING = "Resolving", -- Future: resolving guess result
 	ELIMINATED = "Eliminated", -- Player eliminated
@@ -24,7 +25,6 @@ MatchStates.States = {
 	ROUND_START = "RoundStart",
 	PUNCH_SELECTION = "PunchSelection",
 	PUNCHER_SELECTED = "PuncherSelected",
-	POWER_GAUGE = "PowerGauge",
 	PUNCH_EXECUTING = "PunchExecuting",
 	GUESS_RESULT = "GuessResult",
 	TARGET_ELIMINATED = "TargetEliminated",
@@ -38,22 +38,24 @@ MatchStates.List = {
 	"SelectingTarget",
 	"WaitingForPuncher",
 	"Punching",
+	"PowerGauge",
 	"Guessing",
 	"Resolving",
 	"Eliminated",
 	"Finished",
 }
 
--- Valid transitions for match setup phase
+-- Valid transitions (PowerGauge -> Guessing/Resolved is FUTURE; this phase HOLDS at PowerGauge after lock)
 MatchStates.Transitions = {
 	Preparing = {"SelectingTarget", "Finished"}, -- can finish early if <2 players
 	SelectingTarget = {"WaitingForPuncher", "Finished"},
-	WaitingForPuncher = {"Punching", "Finished"}, -- future: will go to Punching
-	Punching = {"Guessing", "Eliminated", "Finished"},
+	WaitingForPuncher = {"Punching", "Finished"},
+	Punching = {"PowerGauge", "WaitingForPuncher", "Guessing", "Eliminated", "Finished"}, -- WaitingForPuncher revert if Puncher disconnects during prep
+	PowerGauge = {"WaitingForPuncher", "Guessing", "Eliminated", "Finished"}, -- WaitingForPuncher revert if Puncher disconnects during gauge
 	Guessing = {"Resolving", "Finished"},
 	Resolving = {"SelectingTarget", "Eliminated", "Finished"},
 	Eliminated = {"SelectingTarget", "Finished"},
-	Finished = {}, -- terminal, will be cleaned up and return to lobby
+	Finished = {}, -- terminal, will be cleaned up and returned to lobby
 }
 
 function MatchStates.CanTransition(from: string, to: string): boolean
@@ -69,6 +71,7 @@ end
 MatchStates.HiddenPuncherStates = {
 	"WaitingForPuncher",
 	"Punching",
+	"PowerGauge",
 	"Guessing",
 }
 
