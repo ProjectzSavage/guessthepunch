@@ -74,9 +74,16 @@ Config.PowerGaugeShowDebugDisplay = true -- client builds a minimal on-screen ga
 Config.PowerGaugeLockKey = Enum.KeyCode.E -- client lock input for testing (no final GUI yet)
 
 -- ============================================================================
--- FUTURE: Damage, Guessing, Knockout, Scoring (NOT implemented yet, centralized only)
+-- GUESSING & TURN SYSTEM (Phase: Target guessing + turn connection ONLY)
 -- ============================================================================
-Config.GuessingDuration = 15
+Config.GuessingEnabled = true
+Config.GuessingDuration = 15 -- seconds the Target has to submit ONE guess (countdown; timeout = incorrect)
+Config.GuessRevealPause = 1.5 -- seconds pause after reveal before the next punch selection starts
+Config.GuessResultMissPause = 1.0 -- seconds pause after gauge-timeout Miss before a new punch selection starts
+
+-- ============================================================================
+-- FUTURE: Knockout, Scoring (NOT implemented yet, centralized only)
+-- ============================================================================
 Config.KnockoutDuration = 3
 
 Config.StartingHealth = 100
@@ -100,11 +107,12 @@ Config.PerfectIsInstantKO = true
 Config.PunchSequenceEnabled = true
 Config.PunchSequencePrepTime = 0.6 -- seconds: puncher preparation placeholder before punch (server-scheduled)
 Config.PunchSequenceContactTime = 0.35 -- seconds: punch start -> impact; SERVER applies damage at contact (server clock)
--- PLACEHOLDER ASSETS - no real asset IDs have been provided. These are deliberately invalid
--- placeholders (clearly marked). Replace ONLY when the user supplies real asset IDs.
-Config.PunchAnimPrepId = "rbxassetid://0" -- PLACEHOLDER preparation animation (replace when provided)
-Config.PunchAnimPunchId = "rbxassetid://0" -- PLACEHOLDER punch animation (replace when provided)
-Config.PunchSoundId = "rbxassetid://0" -- PLACEHOLDER impact sound (replace when provided)
+-- ANIMATION ASSETS (USER-PROVIDED real IDs - no longer placeholders):
+Config.PunchAnimRaiseId = "rbxassetid://94641587122659" -- USER-PROVIDED: punch raise (windup)
+Config.PunchAnimPrepId = "rbxassetid://98380541569272" -- USER-PROVIDED: holding punch (hold/aim)
+Config.PunchAnimPunchId = "rbxassetid://81965585102785" -- USER-PROVIDED: punch strike
+-- Sound remains a clearly-marked PLACEHOLDER - the user has NOT provided a sound asset ID yet.
+Config.PunchSoundId = "rbxassetid://0" -- PLACEHOLDER impact sound (replace ONLY when user provides a real ID)
 -- Camera shake intensity for the TARGET by zone (0 = none). Presentation only.
 Config.PunchCameraShakeByZone = {
 	Miss = 0,

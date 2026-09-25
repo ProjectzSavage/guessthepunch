@@ -2,8 +2,9 @@
 -- PunchSequenceService.luau
 -- Purpose: VISUAL punch sequence presentation ONLY (server-selected result drives everything)
 -- Implements ONLY:
--- - Preparation animation PLACEHOLDER (Config.PunchAnimPrepId = "rbxassetid://0" - NO real asset ID provided)
--- - Punch animation PLACEHOLDER (Config.PunchAnimPunchId = "rbxassetid://0" - NO real asset ID provided)
+-- - Punch RAISE animation (Config.PunchAnimRaiseId - USER-PROVIDED: 94641587122659)
+-- - HOLDING PUNCH animation (Config.PunchAnimPrepId - USER-PROVIDED: 98380541569272, looped through prep)
+-- - PUNCH STRIKE animation (Config.PunchAnimPunchId - USER-PROVIDED: 81965585102785)
 -- - Cartoon-style impact effect created entirely in CODE (expanding neon sphere, particle burst,
 --   comic "POW!/BAM!/BOOM!/PERFECT!/MISS" billboard, light flash) - no asset IDs needed
 -- - Placeholder sound ONLY because no real asset ID has been provided (Config.PunchSoundId = "rbxassetid://0")
@@ -278,29 +279,33 @@ local function playPlaceholderSound(position: Vector3, pres)
 	Debris:AddItem(host, 2)
 end
 
--- PLACEHOLDER ANIMATIONS - Config IDs are "rbxassetid://0" (clearly marked, no real assets).
--- Attempts the Animation in pcall (will not play with the placeholder ID, harmless);
--- code-driven fallback gives a visible cue so the sequence is observable in testing.
-local function playPlaceholderAnimation(character: Model?, animId: string, label: string)
+-- ANIMATIONS - USER-PROVIDED real asset IDs from Config (punch raise / holding punch / punch strike).
+-- Loaded in pcall with a warn on failure (a bad/unpublished ID will not break the sequence);
+-- the code-created impact/billboard effects always play regardless.
+local function playAnimation(character: Model?, animId: string, label: string, looped: boolean?)
 	if not character then return end
+	if not animId or animId == "rbxassetid://0" then
+		print("[PunchSequence] Animation " .. label .. " skipped (placeholder id, no real asset provided)")
+		return
+	end
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if not humanoid then return end
 	local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", humanoid)
 	local anim = Instance.new("Animation")
-	anim.Name = "PunchSequence_PLACEHOLDER_" .. label
-	anim.AnimationId = animId -- PLACEHOLDER (see Config comment)
+	anim.Name = "PunchSequence_" .. label
+	anim.AnimationId = animId -- USER-PROVIDED asset ID (see Config)
 	local track
-	pcall(function()
+	local ok, err = pcall(function()
 		track = animator:LoadAnimation(anim)
 	end)
-	if track then
-		pcall(function()
-			track:Play()
-		end)
+	if not ok or not track then
+		warn("[PunchSequence] Failed to load " .. label .. " animation " .. animId .. ": " .. tostring(err))
+		return
 	end
-	if animId == "rbxassetid://0" then
-		print("[PunchSequence] Animation placeholder (" .. label .. ") - no real asset ID provided")
-	end
+	track.Looped = looped == true
+	pcall(function()
+		track:Play()
+	end)
 end
 
 -- ============================================================================
@@ -457,17 +462,22 @@ local function onPunchSequence(matchId: string, zone: string, puncherUserId: num
 		return
 	end
 
-	-- 1) PREPARATION animation PLACEHOLDER (on the puncher)
-	playPlaceholderAnimation(puncherChar, (Config and Config.PunchAnimPrepId) or "rbxassetid://0", "Prep")
+	-- 1) PREPARATION animations on the puncher (USER-PROVIDED IDs):
+	--    punch raise (windup) immediately, then holding punch (looped hold through the prep window)
+	playAnimation(puncherChar, (Config and Config.PunchAnimRaiseId) or "rbxassetid://0", "Raise", false)
+	task.delay(0.15, function()
+		if not playing then return end
+		playAnimation(puncherChar, (Config and Config.PunchAnimPrepId) or "rbxassetid://0", "Hold", true)
+	end)
 	if pres.impact then
 		spawnComicBillboard(puncherHRP and puncherHRP.Position or impactPos, "...", Color3.fromRGB(255, 255, 255), 0.6)
 	end
 
-	-- 2) PUNCH animation PLACEHOLDER (after prep, mirroring server timing for LOOK only -
-	--    the server's damage timing is independent and authoritative)
+	-- 2) PUNCH strike animation (at prep end, aligned with the server damage window:
+	--    the server fires immediately and applies damage at prep+contact - same clock math here)
 	task.delay(prepTime, function()
 		if not playing then return end
-		playPlaceholderAnimation(puncherChar, (Config and Config.PunchAnimPunchId) or "rbxassetid://0", "Punch")
+		playAnimation(puncherChar, (Config and Config.PunchAnimPunchId) or "rbxassetid://0", "Punch", false)
 
 		-- 3) IMPACT (after contact delay): cartoon effect + sound + Target camera shake
 		task.delay(contactTime, function()

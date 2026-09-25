@@ -15,10 +15,16 @@
 -- - Power gauge phase: server starts gauge with server-controlled timestamp, needle ping-pongs,
 --   Puncher sends LOCK request (matchId ONLY, no power/zone/timestamp), server calculates zone
 --   from SERVER clock, accepts only one lock, rejects duplicate/early/late/invalid requests,
---   stores result for future damage system, timeout -> Miss, handles disconnect
+--   stores result for damage system, timeout -> Miss, handles disconnect
+-- - Punch sequence + Target match health: server-applied damage (Weak 10/Normal 25/Strong 50/
+--   Perfect 100 KO mark/Miss 0), duplicate damage prevention, clamp, match health separate
+-- - Guessing phase: starts ONLY after a valid punch, Target submits ONE guess (server-validated),
+--   countdown, timeout = incorrect, Puncher hidden until official reveal (RE_GuessResult)
+-- - Turn system: CorrectGuess -> Puncher becomes next Target; WrongGuess/GuessTimeout ->
+--   same Target remains; either way reset turn state and begin another Punch selection
 -- - Handle duplicate requests, spam, rate limits, disconnects
 -- - End safely if <2 active or Target invalid
--- Does NOT implement: damage application, guessing, knockout, scoring, monetization, final animations, final GUI
+-- Does NOT implement: final elimination flow, winner logic, rewards, scoring, monetization, DataStores, final GUI
 -- Roblox Studio Destination: ServerScriptService > Services > MatchService (ModuleScript)
 
 local Players = game:GetService("Players")
@@ -35,12 +41,16 @@ local Config
 local MatchStates
 local Roles
 local PowerZones
+local Results
 local RemoteService
 
 local remotes = {}
 
 local startPowerGauge -- forward declaration, defined in POWER GAUGE section below
 local schedulePunchSequence -- forward declaration, defined in PUNCH RESULT RESOLUTION below
+local startGuessingPhase -- forward declaration, defined in GUESSING & TURN SYSTEM below
+local resetTurnForNewAttempt -- forward declaration, defined in GUESSING & TURN SYSTEM below
+local startPunchSelectionWindow -- forward declaration, defined in GUESSING & TURN SYSTEM below
 
 -- ============================================================================
 -- HELPERS
@@ -838,11 +848,16 @@ local function applyPunchDamage(matchData)
 		end
 		broadcastMatchState(matchData)
 		print(string.format("[MatchService] TARGET KNOCKED OUT in match %s (health 0) - PAUSED, marked only. Full elimination flow is FUTURE (not implemented).", matchData.matchId))
+	else
+		-- Target survived a valid punch -> GUESSING phase starts (server-authoritative)
+		startGuessingPhase(matchData)
 	end
 end
 
 -- Schedules the visual punch sequence timing SERVER-side (prep -> punch -> contact).
 -- One sequence per punch result (sequenceFired guard prevents repeated triggering).
+-- The sequence event is fired IMMEDIATELY so clients can play raise/hold during the server
+-- prep window and the impact visual lands exactly at the server damage moment.
 -- If the match ends or puncher/target disconnects mid-schedule, sequenceCancelled stops it
 -- and clients clean their effects.
 schedulePunchSequence = function(matchData, zone: string, timedOut: boolean)
@@ -858,26 +873,363 @@ schedulePunchSequence = function(matchData, zone: string, timedOut: boolean)
 		local prepTime = Config.PunchSequencePrepTime or 0.6
 		local contactTime = Config.PunchSequenceContactTime or 0.35
 
-		task.wait(prepTime)
-		if not MatchService.Matches[matchData.matchId] or matchData.sequenceCancelled then return end
+		-- Fire at the PUNCH MOMENT start (clients play raise/hold now, strike at prep, impact at prep+contact)
 		broadcastPunchSequence(matchData, zone, timedOut)
-		print(string.format("[MatchService] Punch sequence FIRED for match %s: zone=%s timedOut=%s (prep %.2fs, contact in %.2fs)",
+		print(string.format("[MatchService] Punch sequence FIRED for match %s: zone=%s timedOut=%s (prep %.2fs, contact %.2fs)",
 			matchData.matchId, zone, tostring(timedOut), prepTime, contactTime))
 
-		task.wait(contactTime)
+		task.wait(prepTime + contactTime)
 		if not MatchService.Matches[matchData.matchId] or matchData.sequenceCancelled then
 			print("[MatchService] Punch sequence cancelled before contact for match " .. matchData.matchId)
 			return
 		end
-		-- Damage ONLY after a valid (locked) punch result. Timed-out Miss = no punch contact, no damage.
+		-- Damage ONLY after a valid (locked) punch result. Gauge timeout = nobody punched:
+		-- Miss presentation, 0 damage, and NO guessing phase (guessing starts only after a valid punch).
 		if timedOut or zone == PowerZones.Zones.MISS then
-			print("[MatchService] Miss punch sequence for match " .. matchData.matchId .. " - 0 damage, no contact")
+			print("[MatchService] Gauge-timeout Miss for match " .. matchData.matchId .. " - 0 damage, no contact, NO guessing (no valid punch)")
 			matchData.damageApplied = true -- consume the result: no further damage possible
 			broadcastTargetHealth(matchData, 0, PowerZones.Zones.MISS)
+			-- Begin another Punch selection phase (same Target remains, everyone may request again)
+			task.spawn(function()
+				task.wait(Config.GuessResultMissPause or 1.0)
+				if not MatchService.Matches[matchData.matchId] then return end
+				if matchData.state ~= MatchStates.States.POWER_GAUGE then return end -- leaving/state change already handled
+				resetTurnForNewAttempt(matchData)
+				startPunchSelectionWindow(matchData)
+			end)
 		else
-			applyPunchDamage(matchData)
+			applyPunchDamage(matchData) -- applies damage; on survival starts the guessing phase
 		end
 	end)
+end
+
+-- ============================================================================
+-- GUESSING & TURN SYSTEM (server-authoritative)
+-- Guessing starts ONLY after a valid punch (locked gauge -> damage applied, Target survived).
+-- Target submits ONE guess via RE_GuessRequest (matchId, guessedUserId). Server validates:
+-- correct phase/state, only Target, eligible non-Target choice, one guess, no stale events.
+-- Results (Results.GuessResults): CorrectGuess / WrongGuess / GuessTimeout / InvalidGuess.
+-- Puncher identity stays HIDDEN until reveal; RE_GuessResult (to ALL) = OFFICIAL reveal
+-- after submission or timeout. Then the turn system runs:
+--   CorrectGuess -> Puncher becomes the next Target
+--   WrongGuess / GuessTimeout (treated as incorrect) -> same Target remains
+--   Either way: reset Puncher/power/guessing/timer state, begin another Punch selection.
+-- No final elimination, winner logic, rewards, or DataStores (FUTURE).
+-- ============================================================================
+
+local function broadcastGuessRejected(player: Player, matchId: string, reason: string)
+	local re = remotes.GuessRejected
+	if not re then return end
+	if player and player.Parent then
+		re:FireClient(player, matchId, reason)
+	end
+end
+
+-- Fire InvalidGuess result to the Target ONLY (no reveal; for later systems/logging)
+local function fireInvalidGuessResult(matchData, reason: string)
+	local re = remotes.GuessResult
+	if not re then return end
+	local target = matchData.players[matchData.targetUserId]
+	if target and target.Parent then
+		re:FireClient(target, matchData.matchId, Results.GuessResults.INVALID, nil, nil, reason)
+	end
+end
+
+-- Sent to the TARGET ONLY: eligible choices (all active players EXCEPT the Target) + countdown.
+-- Contains NO puncher information. Rebroadcast for countdown updates and eligible shrink.
+local function broadcastGuessOpen(matchData)
+	local re = remotes.GuessOpen
+	if not re then return end
+	local target = matchData.players[matchData.targetUserId]
+	if not target or not target.Parent then return end
+	local eligible = {}
+	for userId, _ in pairs(matchData.players) do
+		if userId ~= matchData.targetUserId then
+			table.insert(eligible, userId)
+		end
+	end
+	local timeLeft = math.max(0, (matchData.guessEndTick or tick()) - tick())
+	re:FireClient(target, matchData.matchId, eligible, timeLeft)
+end
+
+-- Starts the guessing phase. Called ONLY from applyPunchDamage (valid punch, Target survived).
+startGuessingPhase = function(matchData)
+	if not Config.GuessingEnabled then return end
+	if not MatchService.Matches[matchData.matchId] then return end
+	if not matchData.targetUserId or not matchData.players[matchData.targetUserId] then return end
+	if matchData.targetKnockedOut or (matchData.targetHealth or 0) <= 0 then return end
+	if not matchData.puncherUserId then
+		-- No puncher (edge): skip guessing, start a new punch selection with same Target
+		resetTurnForNewAttempt(matchData)
+		startPunchSelectionWindow(matchData)
+		return
+	end
+	-- Official Puncher reveal happens ONLY after submission/timeout; state payload stays filtered
+	matchData.guessPhaseActive = true
+	matchData.guessLocked = false
+	matchData.guessedUserId = nil
+	matchData.guessEndTick = tick() + (Config.GuessingDuration or 15)
+	matchData.guessAttempt = (matchData.guessAttempt or 0) + 1 -- stale-loop guard
+	if MatchStates.CanTransition(matchData.state, MatchStates.States.GUESSING) then
+		matchData.state = MatchStates.States.GUESSING
+	end
+	broadcastMatchState(matchData) -- filtered: still NO puncherUserId for Target
+	broadcastGuessOpen(matchData)
+	print(string.format("[MatchService] GUESSING started for match %s: Target %d has %.0fs to guess (one guess, timeout = incorrect)",
+		matchData.matchId, matchData.targetUserId, Config.GuessingDuration or 15))
+
+	-- Countdown + timeout loop (attempt-guarded so stale loops never fire into a new attempt)
+	local myAttempt = matchData.guessAttempt
+	task.spawn(function()
+		while MatchService.Matches[matchData.matchId]
+			and matchData.state == MatchStates.States.GUESSING
+			and matchData.guessAttempt == myAttempt
+			and matchData.guessPhaseActive do
+			task.wait(1)
+			if not MatchService.Matches[matchData.matchId] then return end
+			if matchData.guessAttempt ~= myAttempt then return end -- stale
+			if not matchData.guessPhaseActive then return end -- resolved by submission
+			if matchData.state ~= MatchStates.States.GUESSING then return end
+			if matchData.guessLocked then return end
+			-- Update countdown + eligible list on the Target's UI (handles players leaving)
+			broadcastGuessOpen(matchData)
+			if tick() >= (matchData.guessEndTick or 0) then
+				-- TIMEOUT -> treated as incorrect, reveal Puncher
+				resolveGuess(matchData, Results.GuessResults.TIMEOUT, nil, myAttempt)
+				return
+			end
+		end
+	end)
+end
+
+-- Reset Puncher, power, guessing, damage/sequence and timer state between attempts.
+-- Increments turnAttempt so STALE async loops/events from the old attempt cannot affect the new one.
+resetTurnForNewAttempt = function(matchData)
+	-- Prevent stale events from affecting the new attempt
+	matchData.turnAttempt = (matchData.turnAttempt or 0) + 1
+
+	-- Puncher reset
+	if matchData.puncherEnforceConn then
+		matchData.puncherEnforceConn:Disconnect()
+		matchData.puncherEnforceConn = nil
+	end
+	local oldPuncherUserId = matchData.puncherUserId
+	if oldPuncherUserId and matchData.players[oldPuncherUserId] then
+		matchData.roles[oldPuncherUserId] = "PotentialPuncher"
+		broadcastRoleAssigned(matchData, oldPuncherUserId, "PotentialPuncher")
+	end
+	matchData.puncherUserId = nil
+	matchData.puncherSelectedTick = nil
+	matchData.puncherPreparationEndTick = nil
+	matchData.puncherPosition = nil
+	matchData.puncherLocked = false
+	matchData.punchRequests = {}
+	matchData.punchRequestCounts = {}
+
+	-- Power gauge + stored result reset
+	cancelPowerGauge(matchData, "turn reset")
+	matchData.powerGaugeResult = nil
+
+	-- Damage/sequence re-arm for the new attempt
+	matchData.damageApplied = false
+	matchData.sequenceFired = false
+	matchData.sequenceCancelled = false
+
+	-- Guessing reset
+	matchData.guessPhaseActive = false
+	matchData.guessLocked = false
+	matchData.guessedUserId = nil
+	matchData.guessEndTick = nil
+	matchData.guessAttempt = (matchData.guessAttempt or 0) + 1 -- stale guess loops die
+
+	print("[MatchService] Turn state reset for match " .. matchData.matchId .. " (attempt " .. tostring(matchData.turnAttempt) .. ")")
+end
+
+-- (Re)starts a Punch selection window: WaitingForPuncher + fresh timer + attempt-guarded timeout loop.
+startPunchSelectionWindow = function(matchData)
+	if not MatchService.Matches[matchData.matchId] then return end
+	matchData.state = MatchStates.States.WAITING_FOR_PUNCHER
+	matchData.punchSelectionEndTick = tick() + (Config.PunchSelectionDuration or 15)
+	matchData.turnAttempt = (matchData.turnAttempt or 0) + 1
+	local myAttempt = matchData.turnAttempt
+	broadcastMatchState(matchData)
+	print("[MatchService] Match " .. matchData.matchId .. " now WaitingForPuncher - waiting for first valid Punch request (attempt " .. tostring(myAttempt) .. ")")
+
+	-- Punch selection timeout loop (attempt-guarded)
+	task.spawn(function()
+		while MatchService.Matches[matchData.matchId]
+			and matchData.state == MatchStates.States.WAITING_FOR_PUNCHER
+			and matchData.turnAttempt == myAttempt do
+			task.wait(1)
+			if not MatchService.Matches[matchData.matchId] then return end
+			if matchData.turnAttempt ~= myAttempt then return end -- stale
+			if matchData.puncherUserId then
+				break -- Puncher already selected
+			end
+			local now = tick()
+			if matchData.punchSelectionEndTick and now >= matchData.punchSelectionEndTick then
+				if not matchData.puncherUserId then
+					print("[MatchService] Punch selection timeout for match " .. matchData.matchId .. " - no Puncher selected")
+					MatchService.EndMatch(matchData.matchId, "No Puncher selected in time")
+					break
+				end
+			end
+			-- End safely if Target invalid
+			if not matchData.targetUserId or not matchData.players[matchData.targetUserId] then
+				print("[MatchService] Target invalid during WaitingForPuncher for match " .. matchData.matchId)
+				MatchService.EndMatch(matchData.matchId, "Target invalid during puncher selection")
+				break
+			end
+		end
+	end)
+end
+
+-- Resolves the guess: OFFICIAL REVEAL to ALL, then the TURN SYSTEM transition.
+local function resolveGuess(matchData, result: string, guessedUserId: number?, attemptId: number?)
+	if not MatchService.Matches[matchData.matchId] then return end
+	if matchData.state ~= MatchStates.States.GUESSING then return end
+	if attemptId and matchData.guessAttempt ~= attemptId then return end -- stale attempt
+	if not matchData.guessPhaseActive then return end -- already resolved/cancelled
+	matchData.guessPhaseActive = false
+
+	local puncherUserId = matchData.puncherUserId
+
+	-- OFFICIAL PUNCHER REVEAL to ALL match clients (submission or timeout)
+	local re = remotes.GuessResult
+	if re then
+		for _, player in pairs(matchData.playerInstances) do
+			if player and player.Parent then
+				re:FireClient(player, matchData.matchId, result, guessedUserId, puncherUserId)
+			end
+		end
+	end
+	print(string.format("[MatchService] GUESS RESOLVED for match %s: result=%s guessed=%s puncher=%s (revealed to all)",
+		matchData.matchId, result, tostring(guessedUserId), tostring(puncherUserId)))
+
+	-- TURN SYSTEM transition after a brief reveal pause (server-authoritative, attempt-guarded)
+	local myTurn = matchData.turnAttempt
+	task.spawn(function()
+		task.wait(Config.GuessRevealPause or 1.5)
+		if not MatchService.Matches[matchData.matchId] then return end
+		if matchData.turnAttempt ~= myTurn then return end -- stale (players leaving / match end already handled it)
+		if matchData.state ~= MatchStates.States.GUESSING then return end -- leaving logic already advanced state
+
+		if result == Results.GuessResults.CORRECT and puncherUserId and matchData.players[puncherUserId] then
+			-- CORRECT GUESS: the Puncher becomes the next Target
+			local newTargetUserId = puncherUserId
+			local oldTargetUserId = matchData.targetUserId
+			resetTurnForNewAttempt(matchData)
+			matchData.targetUserId = newTargetUserId
+			for userId, _ in pairs(matchData.players) do
+				if userId == newTargetUserId then
+					matchData.roles[userId] = "Target"
+				else
+					matchData.roles[userId] = "PotentialPuncher"
+				end
+				broadcastRoleAssigned(matchData, userId, matchData.roles[userId])
+			end
+			-- Teleport: new Target -> TargetStand (chair), old Target -> a player spawn
+			local newTargetPlayer = matchData.players[newTargetUserId]
+			if newTargetPlayer and matchData.arenaModel then
+				teleportToTargetStand(newTargetPlayer, matchData.arenaModel)
+			end
+			local oldTargetPlayer = matchData.players[oldTargetUserId]
+			if oldTargetPlayer and matchData.arenaModel then
+				local idx = 1
+				for i, p in ipairs(matchData.playerInstances) do
+					if p.UserId == oldTargetUserId then idx = i break end
+				end
+				teleportToArenaSpawn(oldTargetPlayer, matchData.arenaModel, idx)
+			end
+			-- NEW Target -> fresh match health
+			matchData.targetHealth = Config.StartingHealth or 100
+			matchData.targetKnockedOut = false
+			broadcastTargetHealth(matchData, 0, "Reset")
+			print(string.format("[MatchService] Correct guess: Puncher %d is the NEW TARGET for match %s (fresh health)", newTargetUserId, matchData.matchId))
+		else
+			-- WRONG GUESS or TIMEOUT (treated as incorrect): the same Target remains active
+			resetTurnForNewAttempt(matchData)
+			print(string.format("[MatchService] %s: same Target %d remains for match %s", result, matchData.targetUserId, matchData.matchId))
+		end
+
+		-- Either way: begin another Punch selection phase
+		if MatchService.Matches[matchData.matchId] then
+			startPunchSelectionWindow(matchData)
+		end
+	end)
+end
+
+-- Entry point for RE_GuessRequest. Only the Target, only during Guessing, one guess, eligible choice.
+function MatchService.TrySubmitGuess(player: Player, matchId: any, guessedUserId: any): (boolean, string)
+	local matchData = nil
+	if type(matchId) == "string" then
+		matchData = MatchService.Matches[matchId]
+	end
+	if not matchData then
+		local knownMatchId = MatchService.PlayersInMatch[player.UserId]
+		if knownMatchId then
+			matchData = MatchService.Matches[knownMatchId]
+		end
+	end
+	if not matchData then
+		broadcastGuessRejected(player, type(matchId) == "string" and matchId or "", "Match not found")
+		return false, "Match not found"
+	end
+
+	-- Validate (server-authoritative; prevents guessing before the phase starts)
+	if not player or not player.Parent or not Players:GetPlayerByUserId(player.UserId) then
+		return false, "Invalid player identity"
+	end
+	if MatchService.PlayersInMatch[player.UserId] ~= matchData.matchId or not matchData.players[player.UserId] then
+		broadcastGuessRejected(player, matchData.matchId, "Player not in this match")
+		return false, "Player not in this match"
+	end
+	if matchData.state ~= MatchStates.States.GUESSING or not matchData.guessPhaseActive then
+		broadcastGuessRejected(player, matchData.matchId, "Guessing phase not active")
+		fireInvalidGuessResult(matchData, "Too early / phase not active")
+		return false, "Guessing phase not active"
+	end
+	if player.UserId ~= matchData.targetUserId then
+		broadcastGuessRejected(player, matchData.matchId, "Only the Target can guess")
+		return false, "Only the Target can guess"
+	end
+	if matchData.guessLocked then
+		-- Reject duplicate guesses (the one submitted guess was already used)
+		broadcastGuessRejected(player, matchData.matchId, "Duplicate: guess already submitted")
+		fireInvalidGuessResult(matchData, "Duplicate guess")
+		return false, "Duplicate guess"
+	end
+	if type(guessedUserId) ~= "number" then
+		broadcastGuessRejected(player, matchData.matchId, "Invalid guess (must be a player)")
+		fireInvalidGuessResult(matchData, "Invalid guess format")
+		return false, "Invalid guess"
+	end
+	if guessedUserId == matchData.targetUserId then
+		-- Target is excluded from choices
+		broadcastGuessRejected(player, matchData.matchId, "You cannot guess yourself")
+		fireInvalidGuessResult(matchData, "Guessed the Target")
+		return false, "Invalid guess"
+	end
+	if not matchData.players[guessedUserId] then
+		-- Guessed player not eligible (not an active match player)
+		broadcastGuessRejected(player, matchData.matchId, "Guessed player is not eligible")
+		fireInvalidGuessResult(matchData, "Ineligible player")
+		return false, "Invalid guess"
+	end
+
+	-- ACCEPT the one submitted guess and evaluate on the SERVER
+	matchData.guessLocked = true
+	matchData.guessedUserId = guessedUserId
+	local result
+	if guessedUserId == matchData.puncherUserId then
+		result = Results.GuessResults.CORRECT
+	else
+		result = Results.GuessResults.WRONG
+	end
+	print(string.format("[MatchService] Guess ACCEPTED for match %s: Target %d guessed %d -> %s",
+		matchData.matchId, player.UserId, guessedUserId, result))
+	resolveGuess(matchData, result, guessedUserId, matchData.guessAttempt)
+	return true, result
 end
 
 -- Entry point for RE_PowerGaugeStopRequest. Client may send extra args (power/zone claims)
@@ -1008,6 +1360,13 @@ function MatchService.CreateMatchFromQueue(slotId: string, playerUserIds: {numbe
 		damageApplied = false, -- prevents duplicate damage per punch result
 		sequenceFired = false, -- prevents repeated punch sequence triggering
 		sequenceCancelled = false, -- set on match end / disconnect mid-sequence
+		-- GUESSING & TURN SYSTEM
+		turnAttempt = 0, -- increments each turn reset; stale async loops/events are discarded when it changes
+		guessPhaseActive = false, -- guessing phase currently running (only after a valid punch)
+		guessLocked = false, -- the ONE submitted guess (duplicate guesses rejected)
+		guessedUserId = nil, -- the submitted guess (server-evaluated)
+		guessEndTick = nil, -- countdown deadline (timeout = incorrect)
+		guessAttempt = 0, -- increments per guess phase; stale guess loops die when it changes
 	}
 
 	for i, userId in ipairs(playerUserIds) do
@@ -1095,37 +1454,8 @@ function MatchService.CreateMatchFromQueue(slotId: string, playerUserIds: {numbe
 			end
 		end
 
-		matchData.state = MatchStates.States.WAITING_FOR_PUNCHER
-		matchData.punchSelectionEndTick = tick() + (Config.PunchSelectionDuration or 15)
-		broadcastMatchState(matchData)
-		print("[MatchService] Match " .. matchId .. " now WaitingForPuncher - waiting for first valid Punch request")
-
-		-- Start punch selection timeout loop
-		task.spawn(function()
-			while MatchService.Matches[matchId] and matchData.state == MatchStates.States.WAITING_FOR_PUNCHER do
-				task.wait(1)
-				if not MatchService.Matches[matchId] then return end
-				if matchData.puncherUserId then
-					-- Puncher already selected, break
-					break
-				end
-				local now = tick()
-				if matchData.punchSelectionEndTick and now >= matchData.punchSelectionEndTick then
-					if not matchData.puncherUserId then
-						print("[MatchService] Punch selection timeout for match " .. matchId .. " - no Puncher selected")
-						-- For this phase, end match if no Puncher, or could select random. Ending safely.
-						MatchService.EndMatch(matchId, "No Puncher selected in time")
-						break
-					end
-				end
-				-- End safely if Target invalid
-				if not matchData.targetUserId or not matchData.players[matchData.targetUserId] then
-					print("[MatchService] Target invalid during WaitingForPuncher for match " .. matchId)
-					MatchService.EndMatch(matchId, "Target invalid during puncher selection")
-					break
-				end
-			end
-		end)
+		-- Start punch selection window (shared with the turn system: fresh timer + attempt-guarded loop)
+		startPunchSelectionWindow(matchData)
 	end)
 
 	return matchId
@@ -1151,6 +1481,11 @@ function MatchService.EndMatch(matchId: string, reason: string)
 
 	-- Cleanup pending punch sequence + damage (clients also clean their visual effects on MatchEnd)
 	matchData.sequenceCancelled = true
+
+	-- Cleanup guessing phase (countdown loop exits via Matches[matchId] + attempt guards)
+	matchData.guessPhaseActive = false
+	matchData.guessAttempt = (matchData.guessAttempt or 0) + 1
+	matchData.turnAttempt = (matchData.turnAttempt or 0) + 1
 
 	matchData.state = MatchStates.States.FINISHED
 	broadcastMatchState(matchData)
@@ -1210,14 +1545,17 @@ function MatchService.HandlePlayerLeaving(userId: number, reason: string)
 		matchData.puncherPreparationEndTick = nil
 		matchData.puncherPosition = nil
 		matchData.puncherLocked = false
-		-- For remaining players, if in WaitingForPuncher, Punching (prep) or PowerGauge,
-		-- go back to WaitingForPuncher to allow new selection
+		-- GUESSING: puncher gone -> the guess phase loses its answer; cancel it (no reveal)
+		matchData.guessPhaseActive = false
+		matchData.guessAttempt = (matchData.guessAttempt or 0) + 1 -- kill stale guess countdown loop
+		-- For remaining players, if in WaitingForPuncher, Punching (prep), PowerGauge or Guessing,
+		-- go back to WaitingForPuncher to allow a new punch selection
 		if matchData.state == MatchStates.States.PUNCHING
 			or matchData.state == MatchStates.States.POWER_GAUGE
+			or matchData.state == MatchStates.States.GUESSING
 			or matchData.state == MatchStates.States.WAITING_FOR_PUNCHER then
-			matchData.state = MatchStates.States.WAITING_FOR_PUNCHER
-			matchData.punchSelectionEndTick = tick() + (Config.PunchSelectionDuration or 15)
-			broadcastMatchState(matchData)
+			resetTurnForNewAttempt(matchData) -- full turn reset + stale-event guard
+			startPunchSelectionWindow(matchData)
 			print("[MatchService] Puncher left, returning to WaitingForPuncher for match " .. matchId)
 		end
 	end
@@ -1240,6 +1578,11 @@ function MatchService.HandlePlayerLeaving(userId: number, reason: string)
 	end
 
 	broadcastMatchState(matchData)
+
+	-- GUESSING: a choice left -> refresh the Target's eligible list/countdown UI
+	if matchData.state == MatchStates.States.GUESSING and matchData.guessPhaseActive and not matchData.guessLocked then
+		broadcastGuessOpen(matchData)
+	end
 
 	if matchData.activePlayers < (Config.MatchMinPlayers or 2) then
 		MatchService.EndMatch(matchId, "Not enough players - " .. reason)
@@ -1292,11 +1635,13 @@ function MatchService.HandlePlayerLeaving(userId: number, reason: string)
 				matchData.damageApplied = false
 				matchData.sequenceFired = false
 				matchData.powerGaugeResult = nil
+				-- GUESSING: Target left mid-guess -> cancel guess phase, guard stale loops
+				matchData.guessPhaseActive = false
+				matchData.guessAttempt = (matchData.guessAttempt or 0) + 1
+				matchData.turnAttempt = (matchData.turnAttempt or 0) + 1
 				broadcastTargetHealth(matchData, 0, "Reset")
-				-- Reset to WaitingForPuncher
-				matchData.state = MatchStates.States.WAITING_FOR_PUNCHER
-				matchData.punchSelectionEndTick = tick() + (Config.PunchSelectionDuration or 15)
-				broadcastMatchState(matchData)
+				-- Reset to WaitingForPuncher (fresh attempt-guarded selection window)
+				startPunchSelectionWindow(matchData)
 			end
 		end
 	end
@@ -1314,6 +1659,7 @@ function MatchService.Init()
 	MatchStates = require(Shared:WaitForChild("MatchStates"))
 	Roles = require(Shared:WaitForChild("Roles"))
 	PowerZones = require(Shared:WaitForChild("PowerZones"))
+	Results = require(Shared:WaitForChild("Results"))
 
 	local ServicesFolder = script.Parent
 	local RemoteServiceMod = ServicesFolder:FindFirstChild("RemoteService")
@@ -1335,6 +1681,10 @@ function MatchService.Init()
 			"RE_PowerGaugeResult",
 			"RE_PunchSequence",
 			"RE_TargetHealthUpdate",
+			"RE_GuessOpen",
+			"RE_GuessRequest",
+			"RE_GuessRejected",
+			"RE_GuessResult",
 		})
 	end
 
@@ -1355,6 +1705,10 @@ function MatchService.Init()
 		remotes.PowerGaugeResult = remotesFolder:FindFirstChild("RE_PowerGaugeResult")
 		remotes.PunchSequence = remotesFolder:FindFirstChild("RE_PunchSequence")
 		remotes.TargetHealthUpdate = remotesFolder:FindFirstChild("RE_TargetHealthUpdate")
+		remotes.GuessOpen = remotesFolder:FindFirstChild("RE_GuessOpen")
+		remotes.GuessRequest = remotesFolder:FindFirstChild("RE_GuessRequest")
+		remotes.GuessRejected = remotesFolder:FindFirstChild("RE_GuessRejected")
+		remotes.GuessResult = remotesFolder:FindFirstChild("RE_GuessResult")
 	end
 
 	-- Handle PunchRequest from clients: client must send only Punch request, not winner/timestamp/damage/power/role
@@ -1386,6 +1740,15 @@ function MatchService.Init()
 			MatchService.TryLockPowerGauge(player, matchId, ...) -- extra args ignored inside
 		end)
 		print("[MatchService] Listening to RE_PowerGaugeStopRequest (gauge lock)")
+	end
+
+	-- Handle GuessRequest: only the TARGET may submit, ONLY during Guessing, ONE guess allowed.
+	-- Server validates everything and evaluates the guess (client never decides the result).
+	if remotes.GuessRequest then
+		remotes.GuessRequest.OnServerEvent:Connect(function(player: Player, matchId: any, guessedUserId: any)
+			MatchService.TrySubmitGuess(player, matchId, guessedUserId)
+		end)
+		print("[MatchService] Listening to RE_GuessRequest (Target guess submission)")
 	end
 
 	Players.PlayerRemoving:Connect(function(player)
@@ -1451,8 +1814,9 @@ function MatchService.Init()
 		end)
 	end
 
-	print("[MatchService] Initialized - Puncher selection + power gauge + punch sequence + Target match health ready")
-	print("[MatchService] States: Preparing, SelectingTarget, WaitingForPuncher, Punching (prep), PowerGauge, KnockedOut (paused, marked), Guessing (future), Resolving (future), Eliminated, Finished")
+	print("[MatchService] Initialized - Puncher selection + power gauge + punch sequence + health + guessing/turn system ready")
+	print("[MatchService] States: Preparing, SelectingTarget, WaitingForPuncher, Punching (prep), PowerGauge, Guessing (one guess, reveal on resolve), KnockedOut (paused, marked), Eliminated, Finished")
+	print("[MatchService] Turn rules: CorrectGuess -> Puncher becomes next Target | WrongGuess/GuessTimeout -> same Target, new Punch selection")
 	print("[MatchService] Damage: Miss 0 / Weak " .. tostring(Config.Damage and Config.Damage.Weak) .. " / Normal " .. tostring(Config.Damage and Config.Damage.Normal) .. " / Strong " .. tostring(Config.Damage and Config.Damage.Strong) .. " / Perfect " .. tostring(Config.Damage and Config.Damage.Perfect) .. " (instant KO)")
 end
 

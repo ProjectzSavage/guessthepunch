@@ -38,11 +38,13 @@ RemoteNames.Match = {
 	-- Punch sequence + Target health (implemented in this phase)
 	PunchSequence = "RE_PunchSequence", -- Server -> ALL match clients at the punch moment (matchId, zone, puncherUserId, targetUserId, timedOut); punch moment = official reveal; SERVER zone determines presentation, visuals never determine result
 	TargetHealthUpdate = "RE_TargetHealthUpdate", -- Server -> ALL match clients (matchId, targetUserId, health, maxHealth, lastDamage, lastZone); match health is SERVER-INTERNAL and separate from Roblox Humanoid health
-	-- Future: damage application to character, guessing, knockout flow, scoring (not implemented yet)
+	-- Guessing + turn system (implemented in this phase)
+	GuessOpen = "RE_GuessOpen", -- Server -> TARGET ONLY (matchId, eligibleUserIds, timeLeft); contains NO puncher info; rebroadcast for countdown/eligibility updates
+	GuessRequest = "RE_GuessRequest", -- Client -> Server: Target ONLY sends (matchId, guessedUserId); server validates, one guess allowed
+	GuessRejected = "RE_GuessRejected", -- Server -> Target (matchId, reason) e.g. duplicate / invalid / too early / not Target
+	GuessResult = "RE_GuessResult", -- Server -> ALL match clients (matchId, result, guessedUserId, puncherUserId) = OFFICIAL PUNCHER REVEAL after submission or timeout; results: CorrectGuess / WrongGuess / GuessTimeout / InvalidGuess
+	-- Future: damage application to character, knockout flow, scoring (not implemented yet)
 	DamageApplied = "RE_DamageApplied",
-	GuessOpen = "RE_GuessOpen",
-	GuessRequest = "RE_GuessRequest",
-	GuessResult = "RE_GuessResult",
 	TargetEliminated = "RE_TargetEliminated",
 	CameraMode = "RE_CameraMode",
 	AnimationPlay = "RE_AnimationPlay",

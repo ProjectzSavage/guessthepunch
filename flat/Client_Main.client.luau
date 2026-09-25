@@ -29,6 +29,7 @@ local TargetVisibilityService = nil
 local PuncherSelectionService = nil
 local PowerGaugeService = nil
 local PunchSequenceService = nil
+local GuessingService = nil
 
 local function loadClientServices()
 	local servicesFolder = script:FindFirstChild("Services")
@@ -77,8 +78,13 @@ local function loadClientServices()
 			local ok, mod = pcall(require, seqMod)
 			if ok then PunchSequenceService = mod else warn("[Client] Failed to require PunchSequenceService: " .. tostring(mod)) end
 		end
+		local guessMod = servicesFolder:FindFirstChild("GuessingService")
+		if guessMod then
+			local ok, mod = pcall(require, guessMod)
+			if ok then GuessingService = mod else warn("[Client] Failed to require GuessingService: " .. tostring(mod)) end
+		end
 	else
-		warn("[Client] Services folder not found - create StarterPlayerScripts/GuessThePuncherClient/Services with TargetCameraService, TargetVisibilityService, PuncherSelectionService, PowerGaugeService, PunchSequenceService")
+		warn("[Client] Services folder not found - create StarterPlayerScripts/GuessThePuncherClient/Services with TargetCameraService, TargetVisibilityService, PuncherSelectionService, PowerGaugeService, PunchSequenceService, GuessingService")
 	end
 end
 
@@ -153,6 +159,9 @@ local function applyPuncherState()
 	if PunchSequenceService then
 		PunchSequenceService.UpdateState(currentMatchId, currentRole, currentState)
 	end
+	if GuessingService then
+		GuessingService.UpdateState(currentMatchId, currentRole, currentState)
+	end
 end
 
 local function restoreAll()
@@ -162,6 +171,7 @@ local function restoreAll()
 	if PuncherSelectionService then PuncherSelectionService.HandleMatchEnd() end
 	if PowerGaugeService then PowerGaugeService.HandleMatchEnd() end
 	if PunchSequenceService then PunchSequenceService.HandleMatchEnd() end
+	if GuessingService then GuessingService.HandleMatchEnd() end
 	currentMatchId = nil
 	currentRole = nil
 	currentState = nil
@@ -176,6 +186,7 @@ if TargetVisibilityService and TargetVisibilityService.Init then TargetVisibilit
 if PuncherSelectionService and PuncherSelectionService.Init then PuncherSelectionService.Init() end
 if PowerGaugeService and PowerGaugeService.Init then PowerGaugeService.Init() end
 if PunchSequenceService and PunchSequenceService.Init then PunchSequenceService.Init() end
+if GuessingService and GuessingService.Init then GuessingService.Init() end
 
 local remotesFolder = ReplicatedStorage:WaitForChild("Remotes", 10)
 if not remotesFolder then
@@ -298,9 +309,10 @@ Players.PlayerRemoving:Connect(function(leavingPlayer)
 	end
 end)
 
-print("[GuessThePuncherClient] Ready - Queue + Match + Target Camera/Visibility + Puncher Selection + Power Gauge + Punch Sequence/Health")
+print("[GuessThePuncherClient] Ready - Queue + Match + Target Camera/Visibility + Puncher Selection + Power Gauge + Punch Sequence/Health + Guessing/Turns")
 print("  Join queue: RE_QueueJoinRequest:FireServer('Slot2') or walk onto EntryArea")
 print("  When PotentialPuncher in WaitingForPuncher: Press F to request Punch (or RE_PunchRequest:FireServer(matchId))")
 print("  First valid server-accepted becomes Puncher, moved behind Target, preparation " .. tostring(Config and Config.PuncherPreparationTime or 3) .. "s")
 print("  When Puncher in PowerGauge: gauge needle moves (reverses at ends), Press E to LOCK (sends matchId only, server decides zone)")
-print("  After lock: punch sequence placeholders, cartoon impact by zone, Target camera shake, server damage (Weak 10/Normal 25/Strong 50/Perfect 100 KO/Miss 0)")
+print("  After lock: real punch animations (raise/hold/strike), cartoon impact by zone, Target camera shake, server damage (Weak 10/Normal 25/Strong 50/Perfect 100 KO/Miss 0)")
+print("  After damage (Target alive): GUESSING - Target picks one eligible player in the on-screen panel; reveal after submit/timeout; correct -> puncher becomes Target")
