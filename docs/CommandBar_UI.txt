@@ -1,0 +1,68 @@
+-- CommandBar_UI.txt
+-- Paste into Roblox Studio Command Bar (View > Command Bar) and run ONCE.
+-- Creates the ModuleScripts for the Game UI phase. You then paste code from GitHub.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local StarterPlayer = game:GetService("StarterPlayer")
+
+local function ensureFolder(parent, name)
+	local f = parent:FindFirstChild(name)
+	if not f then
+		f = Instance.new("Folder")
+		f.Name = name
+		f.Parent = parent
+		print("Created Folder: " .. parent:GetFullName() .. "." .. name)
+	end
+	return f
+end
+
+local function ensureModule(parent, name)
+	local m = parent:FindFirstChild(name)
+	if not m then
+		m = Instance.new("ModuleScript")
+		m.Name = name
+		m.Parent = parent
+		print("Created ModuleScript: " .. parent:GetFullName() .. "." .. name)
+	end
+	return m
+end
+
+-- Shared (paste updated Config)
+local Shared = ensureFolder(ReplicatedStorage, "Shared")
+ensureModule(Shared, "Config") -- update: UI section (UIEnabled/ShowQueueUI/ShowMatchHud)
+
+-- Client
+local StarterPlayerScripts = StarterPlayer:FindFirstChild("StarterPlayerScripts")
+if not StarterPlayerScripts then
+	StarterPlayerScripts = Instance.new("StarterPlayerScripts")
+	StarterPlayerScripts.Name = "StarterPlayerScripts"
+	StarterPlayerScripts.Parent = StarterPlayer
+	print("Created StarterPlayerScripts")
+end
+local ClientRoot = StarterPlayerScripts:FindFirstChild("GuessThePuncherClient")
+if not ClientRoot then
+	ClientRoot = Instance.new("LocalScript")
+	ClientRoot.Name = "GuessThePuncherClient"
+	ClientRoot.Parent = StarterPlayerScripts
+	print("Created LocalScript: GuessThePuncherClient")
+end
+local ClientServices = ensureFolder(ClientRoot, "Services")
+ensureModule(ClientServices, "TargetCameraService")
+ensureModule(ClientServices, "TargetVisibilityService")
+ensureModule(ClientServices, "PuncherSelectionService")
+ensureModule(ClientServices, "PowerGaugeService")
+ensureModule(ClientServices, "PunchSequenceService")
+ensureModule(ClientServices, "GuessingService")
+ensureModule(ClientServices, "MatchResultService")
+ensureModule(ClientServices, "SpectatorService")
+ensureModule(ClientServices, "QueueUIService") -- NEW
+ensureModule(ClientServices, "HudService") -- NEW
+
+print("=== Game UI setup objects ready ===")
+print("Paste code (no .luau extension in Studio names):")
+print("1. flat/Shared_Config.luau        -> ReplicatedStorage.Shared.Config")
+print("2. flat/Client_QueueUIService.luau-> StarterPlayerScripts.GuessThePuncherClient.Services.QueueUIService (NEW)")
+print("3. flat/Client_HudService.luau    -> StarterPlayerScripts.GuessThePuncherClient.Services.HudService (NEW)")
+print("4. flat/Client_Main.client.luau   -> StarterPlayerScripts.GuessThePuncherClient (REPLACE WHOLE)")
+print("NO new remotes, NO Workspace objects, NO manual GUIs - all UI is code-created at runtime.")
+print("Lobby: queue panel (Join/Leave per slot). Match: role/state chip + Target health bar + prompts.")

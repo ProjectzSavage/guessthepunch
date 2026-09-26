@@ -146,6 +146,13 @@ Config.TargetVisibilityCheckInterval = 0.15 -- seconds between visibility update
 Config.TargetRestoreDelay = 0.2 -- delay after respawn before re-applying camera
 
 -- ============================================================================
+-- UI (Phase: game UI - queue panel + match HUD; all UIs are code-created, no asset IDs)
+-- ============================================================================
+Config.UIEnabled = true
+Config.ShowQueueUI = true -- lobby queue panel (join/leave buttons, slot status, countdowns)
+Config.ShowMatchHud = true -- in-match HUD (role/state chip, Target health bar, prompts/countdowns)
+
+-- ============================================================================
 -- TELEPORT & ANTI-EXPLOIT
 -- ============================================================================
 Config.TeleportOffsetY = 3

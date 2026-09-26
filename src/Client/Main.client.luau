@@ -32,6 +32,8 @@ local PunchSequenceService = nil
 local GuessingService = nil
 local MatchResultService = nil
 local SpectatorService = nil
+local QueueUIService = nil
+local HudService = nil
 
 local function loadClientServices()
 	local servicesFolder = script:FindFirstChild("Services")
@@ -95,8 +97,18 @@ local function loadClientServices()
 			local ok, mod = pcall(require, spectMod)
 			if ok then SpectatorService = mod else warn("[Client] Failed to require SpectatorService: " .. tostring(mod)) end
 		end
+		local queueUiMod = servicesFolder:FindFirstChild("QueueUIService")
+		if queueUiMod then
+			local ok, mod = pcall(require, queueUiMod)
+			if ok then QueueUIService = mod else warn("[Client] Failed to require QueueUIService: " .. tostring(mod)) end
+		end
+		local hudMod = servicesFolder:FindFirstChild("HudService")
+		if hudMod then
+			local ok, mod = pcall(require, hudMod)
+			if ok then HudService = mod else warn("[Client] Failed to require HudService: " .. tostring(mod)) end
+		end
 	else
-		warn("[Client] Services folder not found - create StarterPlayerScripts/GuessThePuncherClient/Services with TargetCameraService, TargetVisibilityService, PuncherSelectionService, PowerGaugeService, PunchSequenceService, GuessingService")
+		warn("[Client] Services folder not found - create StarterPlayerScripts/GuessThePuncherClient/Services with TargetCameraService, TargetVisibilityService, PuncherSelectionService, PowerGaugeService, PunchSequenceService, GuessingService, MatchResultService, SpectatorService, QueueUIService, HudService")
 	end
 end
 
@@ -180,6 +192,12 @@ local function applyPuncherState()
 	if SpectatorService then
 		SpectatorService.UpdateState(currentMatchId, currentRole, currentState)
 	end
+	if QueueUIService then
+		QueueUIService.UpdateState(currentMatchId, currentRole, currentState)
+	end
+	if HudService then
+		HudService.UpdateState(currentMatchId, currentRole, currentState)
+	end
 end
 
 local function restoreAll()
@@ -192,6 +210,8 @@ local function restoreAll()
 	if GuessingService then GuessingService.HandleMatchEnd() end
 	if MatchResultService then MatchResultService.HandleMatchEnd() end
 	if SpectatorService then SpectatorService.HandleMatchEnd() end
+	if QueueUIService then QueueUIService.HandleMatchEnd() end
+	if HudService then HudService.HandleMatchEnd() end
 	currentMatchId = nil
 	currentRole = nil
 	currentState = nil
@@ -209,6 +229,8 @@ if PunchSequenceService and PunchSequenceService.Init then PunchSequenceService.
 if GuessingService and GuessingService.Init then GuessingService.Init() end
 if MatchResultService and MatchResultService.Init then MatchResultService.Init() end
 if SpectatorService and SpectatorService.Init then SpectatorService.Init() end
+if QueueUIService and QueueUIService.Init then QueueUIService.Init() end
+if HudService and HudService.Init then HudService.Init() end
 
 local remotesFolder = ReplicatedStorage:WaitForChild("Remotes", 10)
 if not remotesFolder then
