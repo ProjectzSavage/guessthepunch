@@ -219,10 +219,19 @@ end
 -- CORE LOGIC
 -- ============================================================================
 
+local lastQueueAction: { [number]: number } = {} -- [userId] = last tick (anti-spam)
+
 function QueueService.TryJoinSlot(player: Player, slotId: string): (boolean, string)
 	if not player or not player.Parent then
 		return false, "Invalid player"
 	end
+
+	-- Rate limiting (anti-spam): join/leave cooldown per player
+	local now = tick()
+	if now - (lastQueueAction[player.UserId] or 0) < (Config.QueueActionCooldown or 0.5) then
+		return false, "Rate limited, wait a moment"
+	end
+	lastQueueAction[player.UserId] = now
 
 	-- Prevent joining if already in a match (requirement 3)
 	if MatchService and MatchService.IsPlayerInMatch(player.UserId) then
@@ -279,7 +288,14 @@ function QueueService.TryJoinSlot(player: Player, slotId: string): (boolean, str
 	return true, "Joined " .. slotId
 end
 
-function QueueService.LeaveSlot(player: Player): (boolean, string)
+function QueueService.LeaveSlot(player: Player)
+	if player and player.Parent then
+		local now = tick()
+		if now - (lastQueueAction[player.UserId] or 0) < (Config.QueueActionCooldown or 0.5) then
+			return false, "Rate limited, wait a moment"
+		end
+		lastQueueAction[player.UserId] = now
+	end: (boolean, string)
 	if not player then
 		return false, "Invalid player"
 	end

@@ -1,0 +1,126 @@
+-- CommandBar_SpectatorSecurity.txt
+-- Paste into Roblox Studio Command Bar (View > Command Bar) and run ONCE.
+-- Creates objects for Spectator Mode (+ security-audit updates). You then paste code from GitHub.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local StarterPlayer = game:GetService("StarterPlayer")
+
+local function ensureFolder(parent, name)
+	local f = parent:FindFirstChild(name)
+	if not f then
+		f = Instance.new("Folder")
+		f.Name = name
+		f.Parent = parent
+		print("Created Folder: " .. parent:GetFullName() .. "." .. name)
+	end
+	return f
+end
+
+local function ensureModule(parent, name)
+	local m = parent:FindFirstChild(name)
+	if not m then
+		m = Instance.new("ModuleScript")
+		m.Name = name
+		m.Parent = parent
+		print("Created ModuleScript: " .. parent:GetFullName() .. "." .. name)
+	end
+	return m
+end
+
+local function ensureRemote(parent, name)
+	local r = parent:FindFirstChild(name)
+	if not r then
+		r = Instance.new("RemoteEvent")
+		r.Name = name
+		r.Parent = parent
+		print("Created RemoteEvent: " .. parent:GetFullName() .. "." .. name)
+	end
+	return r
+end
+
+-- Shared (paste updated code)
+local Shared = ensureFolder(ReplicatedStorage, "Shared")
+ensureModule(Shared, "Config") -- update: SpectatorLeashDistance/EnforceInterval/QueueActionCooldown
+ensureModule(Shared, "RemoteNames") -- update: RE_SpectatorUpdate
+ensureModule(Shared, "Results")
+ensureModule(Shared, "Roles")
+ensureModule(Shared, "MatchStates")
+ensureModule(Shared, "PowerZones")
+
+-- Remotes (also auto-created by MatchService.Init / Main.server)
+local Remotes = ensureFolder(ReplicatedStorage, "Remotes")
+ensureRemote(Remotes, "RE_SpectatorUpdate") -- NEW
+-- All previous remotes (ensure present)
+ensureRemote(Remotes, "RE_PlayerEliminated")
+ensureRemote(Remotes, "RE_MatchResult")
+ensureRemote(Remotes, "RE_GuessOpen")
+ensureRemote(Remotes, "RE_GuessRequest")
+ensureRemote(Remotes, "RE_GuessRejected")
+ensureRemote(Remotes, "RE_GuessResult")
+ensureRemote(Remotes, "RE_PunchSequence")
+ensureRemote(Remotes, "RE_TargetHealthUpdate")
+ensureRemote(Remotes, "RE_PowerGaugeOpen")
+ensureRemote(Remotes, "RE_PowerGaugeStopRequest")
+ensureRemote(Remotes, "RE_PowerGaugeRejected")
+ensureRemote(Remotes, "RE_PowerGaugeResult")
+ensureRemote(Remotes, "RE_PunchRequest")
+ensureRemote(Remotes, "RE_PunchRejected")
+ensureRemote(Remotes, "RE_PuncherSelected")
+ensureRemote(Remotes, "RE_PuncherPreparation")
+ensureRemote(Remotes, "RE_PunchOpportunityOpen")
+ensureRemote(Remotes, "RE_MatchStart")
+ensureRemote(Remotes, "RE_MatchStateUpdate")
+ensureRemote(Remotes, "RE_MatchEnd")
+ensureRemote(Remotes, "RE_RoleAssigned")
+ensureRemote(Remotes, "RE_TargetSelected")
+ensureRemote(Remotes, "RE_QueueJoinRequest")
+ensureRemote(Remotes, "RE_QueueLeaveRequest")
+ensureRemote(Remotes, "RE_QueueStateUpdate")
+ensureRemote(Remotes, "RE_QueueCountdownUpdate")
+ensureRemote(Remotes, "RE_QueueLocked")
+ensureRemote(Remotes, "RE_QueueStarted")
+ensureRemote(Remotes, "RE_QueuePlayerLeft")
+
+-- Server services (paste updated code)
+local Services = ensureFolder(ServerScriptService, "Services")
+ensureModule(Services, "MatchService") -- update: 2163 lines (spectator mask/leash + audit fixes)
+ensureModule(Services, "QueueService") -- update: rate limiting
+ensureModule(Services, "RemoteService")
+
+-- Client
+local StarterPlayerScripts = StarterPlayer:FindFirstChild("StarterPlayerScripts")
+if not StarterPlayerScripts then
+	StarterPlayerScripts = Instance.new("StarterPlayerScripts")
+	StarterPlayerScripts.Name = "StarterPlayerScripts"
+	StarterPlayerScripts.Parent = StarterPlayer
+	print("Created StarterPlayerScripts")
+end
+local ClientRoot = StarterPlayerScripts:FindFirstChild("GuessThePuncherClient")
+if not ClientRoot then
+	ClientRoot = Instance.new("LocalScript")
+	ClientRoot.Name = "GuessThePuncherClient"
+	ClientRoot.Parent = StarterPlayerScripts
+	print("Created LocalScript: GuessThePuncherClient")
+end
+local ClientServices = ensureFolder(ClientRoot, "Services")
+ensureModule(ClientServices, "TargetCameraService")
+ensureModule(ClientServices, "TargetVisibilityService")
+ensureModule(ClientServices, "PuncherSelectionService")
+ensureModule(ClientServices, "PowerGaugeService")
+ensureModule(ClientServices, "PunchSequenceService")
+ensureModule(ClientServices, "GuessingService")
+ensureModule(ClientServices, "MatchResultService")
+ensureModule(ClientServices, "SpectatorService") -- NEW
+
+print("=== Spectator Mode + Security updates ready ===")
+print("Paste code (no .luau extension in Studio names):")
+print("1. flat/Shared_Config.luau          -> ReplicatedStorage.Shared.Config")
+print("2. flat/Shared_RemoteNames.luau     -> ReplicatedStorage.Shared.RemoteNames")
+print("3. flat/Server_MatchService.luau    -> ServerScriptService.Services.MatchService (REPLACE WHOLE)")
+print("4. flat/Server_QueueService.luau    -> ServerScriptService.Services.QueueService (REPLACE WHOLE)")
+print("5. flat/Server_Main.server.luau     -> ServerScriptService.GuessThePuncherServer (REPLACE WHOLE)")
+print("6. flat/Client_Main.client.luau     -> StarterPlayerScripts.GuessThePuncherClient (REPLACE WHOLE)")
+print("7. flat/Client_SpectatorService.luau-> ...Services.SpectatorService (NEW)")
+print("Spectator flow: KO -> spectator platform + leash (server) -> follow camera (Q/E switch)")
+print("-> puncher hidden until reveal -> match end -> lobby return, camera/controls restored.")

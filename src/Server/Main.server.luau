@@ -63,17 +63,31 @@ local matchRemoteNames = {
 	"RE_MatchEnd",
 	"RE_RoleAssigned",
 	"RE_TargetSelected",
-	-- Future (reserved, not used yet)
+	-- Puncher selection
 	"RE_PunchOpportunityOpen",
 	"RE_PunchRequest",
+	"RE_PunchRejected",
 	"RE_PuncherSelected",
+	"RE_PuncherPreparation",
+	-- Power gauge
 	"RE_PowerGaugeOpen",
 	"RE_PowerGaugeStopRequest",
+	"RE_PowerGaugeRejected",
 	"RE_PowerGaugeResult",
-	"RE_DamageApplied",
+	-- Punch sequence + health
+	"RE_PunchSequence",
+	"RE_TargetHealthUpdate",
+	-- Guessing + turns
 	"RE_GuessOpen",
 	"RE_GuessRequest",
+	"RE_GuessRejected",
 	"RE_GuessResult",
+	-- Knockout/elimination + match end + spectator
+	"RE_PlayerEliminated",
+	"RE_MatchResult",
+	"RE_SpectatorUpdate",
+	-- Future (reserved, not used yet)
+	"RE_DamageApplied",
 	"RE_TargetEliminated",
 	"RE_CameraMode",
 	"RE_AnimationPlay",

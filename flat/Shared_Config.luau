@@ -22,6 +22,7 @@ Config.MinimumPlayers = 2 -- minimum to start queue
 Config.QueueFullCountdown = 5 -- when slot full, countdown before match
 Config.QueuePartialWaitTime = 30 -- wait before starting with >=2 but not full
 Config.QueuePartialCountdown = 5
+Config.QueueActionCooldown = 0.5 -- anti-spam cooldown per player for queue join/leave requests
 Config.QueueCountdownDuration = 10 -- fallback
 
 -- ============================================================================
@@ -87,6 +88,8 @@ Config.GuessResultMissPause = 1.0 -- seconds pause after gauge-timeout Miss befo
 Config.KnockoutDuration = 3 -- seconds of knockout presentation before spectator teleport / next turn
 Config.SpectatorAutoPlatformHeight = 25 -- Y offset above arena when auto-creating a spectator platform
 Config.SpectatorPlatformSize = 24 -- studs; auto-created spectator platform size
+Config.SpectatorLeashDistance = 18 -- max studs a spectator may move from the SpectatorArea center before the server teleports them back (prevents entering the arena)
+Config.SpectatorEnforceInterval = 0.5 -- seconds between server leash checks for spectators
 -- Optional manual object per arena (Workspace.MatchArenas.ArenaX.SpectatorArea, BasePart,
 -- Anchored true, CanCollide true): if present it is used; otherwise the server AUTO-CREATES
 -- a floating platform above the arena.

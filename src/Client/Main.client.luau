@@ -31,6 +31,7 @@ local PowerGaugeService = nil
 local PunchSequenceService = nil
 local GuessingService = nil
 local MatchResultService = nil
+local SpectatorService = nil
 
 local function loadClientServices()
 	local servicesFolder = script:FindFirstChild("Services")
@@ -88,6 +89,11 @@ local function loadClientServices()
 		if resultMod then
 			local ok, mod = pcall(require, resultMod)
 			if ok then MatchResultService = mod else warn("[Client] Failed to require MatchResultService: " .. tostring(mod)) end
+		end
+		local spectMod = servicesFolder:FindFirstChild("SpectatorService")
+		if spectMod then
+			local ok, mod = pcall(require, spectMod)
+			if ok then SpectatorService = mod else warn("[Client] Failed to require SpectatorService: " .. tostring(mod)) end
 		end
 	else
 		warn("[Client] Services folder not found - create StarterPlayerScripts/GuessThePuncherClient/Services with TargetCameraService, TargetVisibilityService, PuncherSelectionService, PowerGaugeService, PunchSequenceService, GuessingService")
@@ -171,6 +177,9 @@ local function applyPuncherState()
 	if MatchResultService then
 		MatchResultService.UpdateState(currentMatchId)
 	end
+	if SpectatorService then
+		SpectatorService.UpdateState(currentMatchId, currentRole, currentState)
+	end
 end
 
 local function restoreAll()
@@ -182,6 +191,7 @@ local function restoreAll()
 	if PunchSequenceService then PunchSequenceService.HandleMatchEnd() end
 	if GuessingService then GuessingService.HandleMatchEnd() end
 	if MatchResultService then MatchResultService.HandleMatchEnd() end
+	if SpectatorService then SpectatorService.HandleMatchEnd() end
 	currentMatchId = nil
 	currentRole = nil
 	currentState = nil
@@ -198,6 +208,7 @@ if PowerGaugeService and PowerGaugeService.Init then PowerGaugeService.Init() en
 if PunchSequenceService and PunchSequenceService.Init then PunchSequenceService.Init() end
 if GuessingService and GuessingService.Init then GuessingService.Init() end
 if MatchResultService and MatchResultService.Init then MatchResultService.Init() end
+if SpectatorService and SpectatorService.Init then SpectatorService.Init() end
 
 local remotesFolder = ReplicatedStorage:WaitForChild("Remotes", 10)
 if not remotesFolder then
@@ -289,6 +300,21 @@ if roleAssigned then
 		if role == "Puncher" then currentPuncherUserId = player.UserId end
 		applyTargetState()
 		applyPuncherState()
+	end)
+end
+
+-- SELF-ELIMINATION: restore Target camera/visibility immediately (SpectatorService takes over camera)
+local playerEliminated = remotesFolder:FindFirstChild("RE_PlayerEliminated")
+if playerEliminated then
+	playerEliminated.OnClientEvent:Connect(function(matchId, eliminatedUserId, reason)
+		print(string.format("[Match] PlayerEliminated matchId=%s user=%d reason=%s", tostring(matchId), eliminatedUserId or -1, tostring(reason)))
+		if eliminatedUserId == player.UserId then
+			currentRole = "Spectator"
+			currentTargetUserId = nil
+			if TargetCameraService then TargetCameraService.Restore() end
+			if TargetVisibilityService then TargetVisibilityService.Restore() end
+			print("[Match] You were eliminated - camera/visibility restored, entering spectator mode")
+		end
 	end)
 end
 

@@ -251,6 +251,54 @@ local function teleportToSpectatorArea(player: Player, arenaModel: Model?)
 	end)
 end
 
+-- SPECTATOR WATCH LIST (Server -> spectator ONLY): active (non-eliminated) player ids.
+-- Contains NO puncher identity, no roles, no gauge/power info - the spectator camera may
+-- switch between these players, but Puncher identity stays hidden until the official reveal.
+local function broadcastSpectatorUpdate(matchData)
+	local re = remotes.SpectatorUpdate
+	if not re then return end
+	local activeList = {}
+	for userId, _ in pairs(matchData.players) do
+		table.insert(activeList, userId)
+	end
+	for _, player in pairs(matchData.playerInstances) do
+		if player and player.Parent then
+			if (matchData.eliminatedUserIds and matchData.eliminatedUserIds[player.UserId] ~= nil) or (matchData.roles[player.UserId] == "Spectator") then
+				re:FireClient(player, matchData.matchId, activeList)
+			end
+		end
+	end
+end
+
+-- SPECTATOR LEASH: spectators must not enter the active arena. Server-authoritative loop
+-- teleports any eliminated player who leaves the SpectatorArea radius back to the area.
+local function startSpectatorLeashLoop(matchData)
+	if matchData.spectatorLeashRunning then return end
+	matchData.spectatorLeashRunning = true
+	task.spawn(function()
+		while MatchService.Matches[matchData.matchId] and not matchData.ending do
+			local arenaCF = getSpectatorAreaCFrame(matchData.arenaModel)
+			local maxDist = Config.SpectatorLeashDistance or 18
+			for _, player in pairs(matchData.playerInstances) do
+				if not player or not player.Parent then continue end
+				if (matchData.eliminatedUserIds and matchData.eliminatedUserIds[player.UserId] ~= nil) or (matchData.roles[player.UserId] == "Spectator") then
+					local char = player.Character
+					local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+					if hrp then
+						local dist = (Vector3.new(hrp.Position.X, 0, hrp.Position.Z) - Vector3.new(arenaCF.Position.X, 0, arenaCF.Position.Z)).Magnitude
+						if dist > maxDist then
+							teleportToSpectatorArea(player, matchData.arenaModel)
+							print("[MatchService] Spectator " .. player.Name .. " teleported back to SpectatorArea (leash, dist " .. string.format("%.0f", dist) .. ")")
+						end
+					end
+				end
+			end
+			task.wait(Config.SpectatorEnforceInterval or 0.5)
+		end
+		matchData.spectatorLeashRunning = false
+	end)
+end
+
 -- ============================================================================
 -- FILTERED PAYLOADS (anti-cheat: Target must not receive hidden Puncher info)
 -- ============================================================================
@@ -258,16 +306,20 @@ end
 local function buildFilteredPayload(matchData, forPlayerUserId: number)
 	local isTargetRecipient = (forPlayerUserId == matchData.targetUserId)
 	local isPuncherRecipient = (forPlayerUserId == matchData.puncherUserId)
+	-- SECURITY: eliminated players (spectators) must NOT receive Puncher identity until the
+	-- official reveal (RE_GuessResult). Their payloads are masked exactly like the Target's.
+	local isSpectatorRecipient = (matchData.eliminatedUserIds and matchData.eliminatedUserIds[forPlayerUserId] ~= nil) or (matchData.roles[forPlayerUserId] == "Spectator")
+	local hidePuncherFromRecipient = isTargetRecipient or isSpectatorRecipient
 
 	local playerList = {}
 	for userId, _ in pairs(matchData.players) do
 		table.insert(playerList, userId)
 	end
 
-	-- Filter roles: hide Puncher identity from Target
+	-- Filter roles: hide Puncher identity from Target AND spectators
 	local filteredRoles = {}
 	for uid, role in pairs(matchData.roles) do
-		if isTargetRecipient then
+		if hidePuncherFromRecipient then
 			if role == "Puncher" then
 				filteredRoles[uid] = "PotentialPuncher" -- mask
 			else
@@ -278,7 +330,7 @@ local function buildFilteredPayload(matchData, forPlayerUserId: number)
 		end
 	end
 
-	-- Payload must NOT contain puncherUserId for Target before reveal, nor healthTable, nor private camera/position
+	-- Payload must NOT contain puncherUserId for Target/spectators before reveal, nor healthTable, nor private camera/position
 	local payload: any = {
 		matchId = matchData.matchId,
 		state = matchData.state,
@@ -288,19 +340,19 @@ local function buildFilteredPayload(matchData, forPlayerUserId: number)
 		arenaName = matchData.arenaName,
 	}
 
-	-- Only include puncherUserId for non-Target recipients (Target must not receive hidden Puncher info)
-	if not isTargetRecipient then
+	-- Only include puncherUserId for active non-Target recipients (never for Target/spectators)
+	if not hidePuncherFromRecipient then
 		if matchData.puncherUserId then
 			payload.puncherUserId = matchData.puncherUserId
 		end
 	else
-		-- Explicitly NOT including puncherUserId for Target
+		-- Explicitly NOT including puncherUserId for Target/spectators
 	end
 
 	-- For Puncher selection phase, we may include preparation time left, but not power/damage
 	if matchData.puncherUserId and matchData.puncherPreparationEndTick then
 		local timeLeft = math.max(0, matchData.puncherPreparationEndTick - tick())
-		if not isTargetRecipient then
+		if not hidePuncherFromRecipient then
 			payload.puncherPreparationTimeLeft = timeLeft
 		end
 	end
@@ -352,7 +404,8 @@ end
 local function broadcastRoleAssigned(matchData, userId: number, role: string)
 	local re = remotes.RoleAssigned
 	if not re then return end
-	local player = matchData.players[userId]
+	-- Eliminated/spectator players are removed from matchData.players, so fall back to Players
+	local player = matchData.players[userId] or Players:GetPlayerByUserId(userId)
 	if player and player.Parent then
 		re:FireClient(player, matchData.matchId, role)
 	end
@@ -361,10 +414,14 @@ end
 local function broadcastPuncherSelected(matchData, puncherUserId: number)
 	local re = remotes.PuncherSelected
 	if not re then return end
-	-- Filtered: Target does NOT get puncherUserId before official reveal
+	-- Filtered: Target does NOT get puncherUserId before official reveal; SPECTATORS get NOTHING
+	-- (hidden until official reveal per spectator mode requirements)
 	for _, player in pairs(matchData.playerInstances) do
 		if player and player.Parent then
-			if player.UserId == matchData.targetUserId then
+			local isSpectator = (matchData.eliminatedUserIds and matchData.eliminatedUserIds[player.UserId] ~= nil) or (matchData.roles[player.UserId] == "Spectator")
+			if isSpectator then
+				-- Spectators receive no puncher-selected event at all (identity stays hidden)
+			elseif player.UserId == matchData.targetUserId then
 				-- For Target: hide who is Puncher, only tell that Puncher was selected (no identity)
 				re:FireClient(player, matchData.matchId, nil) -- nil = hidden
 			else
@@ -387,7 +444,10 @@ local function broadcastPuncherPreparation(matchData, timeLeft: number)
 	if not re then return end
 	for _, player in pairs(matchData.playerInstances) do
 		if player and player.Parent then
-			if player.UserId == matchData.targetUserId then
+			local isSpectator = (matchData.eliminatedUserIds and matchData.eliminatedUserIds[player.UserId] ~= nil) or (matchData.roles[player.UserId] == "Spectator")
+			if isSpectator then
+				-- Spectators receive no puncher preparation info
+			elseif player.UserId == matchData.targetUserId then
 				-- Target does not get preparation info about Puncher? For this phase, we hide? But preparation is for Puncher only
 				-- For Target, we can send 0 or not send, to not reveal
 				re:FireClient(player, matchData.matchId, 0)
@@ -969,6 +1029,10 @@ eliminateTarget = function(matchData, reason: string)
 			teleportToSpectatorArea(eliminatedPlayer, matchData.arenaModel)
 		end
 
+		-- SPECTATOR MODE: leash loop (cannot enter arena) + watch list (camera switching)
+		startSpectatorLeashLoop(matchData)
+		broadcastSpectatorUpdate(matchData)
+
 		-- 5. Update active players
 		recountActivePlayers(matchData)
 		broadcastMatchState(matchData)
@@ -1361,6 +1425,21 @@ function MatchService.TrySubmitGuess(player: Player, matchId: any, guessedUserId
 		broadcastGuessRejected(player, matchData.matchId, "Duplicate: guess already submitted")
 		fireInvalidGuessResult(matchData, "Duplicate guess")
 		return false, "Duplicate guess"
+	end
+
+	-- Rate limiting (anti-spam): per-player cooldown + max requests per guess phase
+	local nowTick = tick()
+	if not matchData.guessRequests then matchData.guessRequests = {} end
+	if nowTick - (matchData.guessRequests[player.UserId] or 0) < 0.3 then
+		broadcastGuessRejected(player, matchData.matchId, "Rate limited")
+		return false, "Rate limited"
+	end
+	matchData.guessRequests[player.UserId] = nowTick
+	matchData.guessRequestCount = (matchData.guessRequestCount or 0) + 1
+	if matchData.guessRequestCount > 12 then
+		broadcastGuessRejected(player, matchData.matchId, "Too many guess requests")
+		fireInvalidGuessResult(matchData, "Guess spam")
+		return false, "Too many guess requests"
 	end
 	if type(guessedUserId) ~= "number" then
 		broadcastGuessRejected(player, matchData.matchId, "Invalid guess (must be a player)")
@@ -1809,6 +1888,11 @@ function MatchService.HandlePlayerLeaving(userId: number, reason: string)
 		broadcastGuessOpen(matchData)
 	end
 
+	-- SPECTATORS: active set changed -> refresh their watch lists
+	if matchData.eliminatedUserIds and next(matchData.eliminatedUserIds) ~= nil then
+		broadcastSpectatorUpdate(matchData)
+	end
+
 	-- MATCH END RULE: the match ends when one active player remains (winner confirmed on server)
 	if matchData.activePlayers <= 0 then
 		MatchService.EndMatch(matchId, "No active players remain - " .. reason)
@@ -1930,6 +2014,7 @@ function MatchService.Init()
 			"RE_GuessResult",
 			"RE_PlayerEliminated",
 			"RE_MatchResult",
+			"RE_SpectatorUpdate",
 		})
 	end
 
@@ -1956,6 +2041,7 @@ function MatchService.Init()
 		remotes.GuessResult = remotesFolder:FindFirstChild("RE_GuessResult")
 		remotes.PlayerEliminated = remotesFolder:FindFirstChild("RE_PlayerEliminated")
 		remotes.MatchResult = remotesFolder:FindFirstChild("RE_MatchResult")
+		remotes.SpectatorUpdate = remotesFolder:FindFirstChild("RE_SpectatorUpdate")
 	end
 
 	-- Handle PunchRequest from clients: client must send only Punch request, not winner/timestamp/damage/power/role

@@ -46,6 +46,7 @@ RemoteNames.Match = {
 	-- Knockout/elimination + match end (implemented in this phase)
 	PlayerEliminated = "RE_PlayerEliminated", -- Server -> ALL match clients (matchId, eliminatedUserId, reason); KO presentation + the eliminated player switches to spectator
 	MatchResult = "RE_MatchResult", -- Server -> ALL match clients (matchId, matchResult, winnerUserId, reason); matchResult: Winner / Cancelled; victory/defeat presentation
+	SpectatorUpdate = "RE_SpectatorUpdate", -- Server -> SPECTATOR ONLY (matchId, activeUserIds); watch list for the spectator camera; contains NO puncher identity or roles
 	-- Future: damage application to character, scoring (not implemented yet)
 	DamageApplied = "RE_DamageApplied",
 	TargetEliminated = "RE_TargetEliminated",
