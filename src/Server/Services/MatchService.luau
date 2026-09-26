@@ -24,7 +24,7 @@
 --   same Target remains; either way reset turn state and begin another Punch selection
 -- - Handle duplicate requests, spam, rate limits, disconnects
 -- - End safely if <2 active or Target invalid
--- Does NOT implement: final elimination flow, winner logic, rewards, scoring, monetization, DataStores, final GUI
+-- Does NOT implement: winner rewards, scoring, monetization, DataStores, final GUI
 -- Roblox Studio Destination: ServerScriptService > Services > MatchService (ModuleScript)
 
 local Players = game:GetService("Players")
@@ -51,6 +51,7 @@ local schedulePunchSequence -- forward declaration, defined in PUNCH RESULT RESO
 local startGuessingPhase -- forward declaration, defined in GUESSING & TURN SYSTEM below
 local resetTurnForNewAttempt -- forward declaration, defined in GUESSING & TURN SYSTEM below
 local startPunchSelectionWindow -- forward declaration, defined in GUESSING & TURN SYSTEM below
+local eliminateTarget -- forward declaration, defined in KNOCKOUT & ELIMINATION below
 
 -- ============================================================================
 -- HELPERS
@@ -189,6 +190,65 @@ local function teleportToLobby(player: Player)
 		end
 	end
 	hrp.CFrame = CFrame.new(0, 5, 0)
+end
+
+-- ============================================================================
+-- SPECTATOR AREA + ACTIVE PLAYER COUNT (knockout/elimination support)
+-- ============================================================================
+
+-- Active players = the matchData.players map (eliminated players are REMOVED from it).
+local function recountActivePlayers(matchData): number
+	local count = 0
+	for _ in pairs(matchData.players) do
+		count += 1
+	end
+	matchData.activePlayers = count
+	return count
+end
+
+-- Safe spectator position: uses an optional manual SpectatorArea BasePart inside the arena;
+-- otherwise the server AUTO-CREATES a floating anchored platform above the arena (reused).
+local function getSpectatorAreaCFrame(arenaModel: Model?): CFrame
+	if arenaModel then
+		local area = arenaModel:FindFirstChild("SpectatorArea")
+		if area and area:IsA("BasePart") then
+			return area.CFrame
+		end
+		-- Auto-create a safe floating platform above the arena
+		local ok, boundsCF, boundsSize = pcall(function()
+			local cf, size = arenaModel:GetBoundingBox()
+			return cf, size
+		end)
+		local centerCF = CFrame.new(0, Config.SpectatorAutoPlatformHeight or 25, 0)
+		if ok and boundsCF then
+			centerCF = CFrame.new(boundsCF.Position + Vector3.new(0, (Config.SpectatorAutoPlatformHeight or 25) + ((boundsSize and boundsSize.Y or 10) / 2), 0))
+		end
+		local platform = Instance.new("Part")
+		platform.Name = "SpectatorArea"
+		platform.Anchored = true
+		platform.CanCollide = true
+		platform.Transparency = 0.4
+		platform.Material = Enum.Material.Glass
+		platform.Color = Color3.fromRGB(120, 160, 220)
+		platform.Size = Vector3.new(Config.SpectatorPlatformSize or 24, 1, Config.SpectatorPlatformSize or 24)
+		platform.CFrame = centerCF
+		platform.Parent = arenaModel
+		print("[MatchService] Auto-created SpectatorArea platform above arena " .. arenaModel.Name)
+		return platform.CFrame
+	end
+	return CFrame.new(0, Config.SpectatorAutoPlatformHeight or 25, 0)
+end
+
+local function teleportToSpectatorArea(player: Player, arenaModel: Model?)
+	local character = player.Character
+	if not character then return end
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	local areaCF = getSpectatorAreaCFrame(arenaModel)
+	local offset = Vector3.new(math.random(-4, 4), 3, math.random(-4, 4))
+	pcall(function()
+		hrp.CFrame = areaCF + offset
+	end)
 end
 
 -- ============================================================================
@@ -840,18 +900,121 @@ local function applyPunchDamage(matchData)
 		matchData.matchId, matchData.targetUserId, damage, zone, matchData.targetHealth, Config.StartingHealth or 100))
 	broadcastTargetHealth(matchData, damage, zone)
 
-	-- Detect zero health -> mark knocked out + pause
+	-- Detect zero health -> KNOCKOUT & ELIMINATION (any damage reducing health to zero; Perfect is instant)
 	if matchData.targetHealth <= 0 then
-		matchData.targetKnockedOut = true
-		if MatchStates.CanTransition(matchData.state, MatchStates.States.KNOCKED_OUT) then
-			matchData.state = MatchStates.States.KNOCKED_OUT
-		end
-		broadcastMatchState(matchData)
-		print(string.format("[MatchService] TARGET KNOCKED OUT in match %s (health 0) - PAUSED, marked only. Full elimination flow is FUTURE (not implemented).", matchData.matchId))
+		local reason = zone == PowerZones.Zones.PERFECT and Results.EliminationReasons.PERFECT_PUNCH or Results.EliminationReasons.DAMAGE_KO
+		eliminateTarget(matchData, reason)
 	else
 		-- Target survived a valid punch -> GUESSING phase starts (server-authoritative)
 		startGuessingPhase(matchData)
 	end
+end
+
+-- ============================================================================
+-- KNOCKOUT & ELIMINATION (server-driven sequence)
+-- 1. Stop gameplay input  2. KO presentation  3. Server confirms elimination
+-- 4. Move player to spectator mode/area  5. Update active players
+-- 6. Start the next turn, or prepare the match to end when one active player remains
+-- ============================================================================
+
+local function broadcastPlayerEliminated(matchData, eliminatedUserId: number, reason: string)
+	local re = remotes.PlayerEliminated
+	if not re then return end
+	for _, player in pairs(matchData.playerInstances) do
+		if player and player.Parent then
+			re:FireClient(player, matchData.matchId, eliminatedUserId, reason)
+		end
+	end
+end
+
+eliminateTarget = function(matchData, reason: string)
+	if not MatchService.Matches[matchData.matchId] then return end
+	if matchData.ending then return end
+	local targetUserId = matchData.targetUserId
+	if not targetUserId then return end
+	if matchData.eliminatedUserIds[targetUserId] then return end -- already eliminated
+
+	print(string.format("[MatchService] KNOCKOUT: Target %d eliminated in match %s (%s)", targetUserId, matchData.matchId, reason))
+
+	-- 1. Stop gameplay input: full turn reset (puncher, gauge, sequence, timers, guessing + stale guards)
+	resetTurnForNewAttempt(matchData)
+
+	-- 3. Elimination confirmed on the SERVER: out of the active set, spectator role
+	matchData.eliminatedUserIds[targetUserId] = reason
+	matchData.players[targetUserId] = nil -- cannot Punch, Guess, or become Target anymore
+	matchData.roles[targetUserId] = "Spectator"
+	matchData.targetUserId = nil
+	recountActivePlayers(matchData)
+
+	-- 2. KO presentation to ALL clients (+ the eliminated player switches to spectator)
+	broadcastPlayerEliminated(matchData, targetUserId, reason)
+	broadcastRoleAssigned(matchData, targetUserId, "Spectator")
+
+	if MatchStates.CanTransition(matchData.state, MatchStates.States.KNOCKED_OUT) then
+		matchData.state = MatchStates.States.KNOCKED_OUT
+	end
+	broadcastMatchState(matchData)
+
+	-- 4-6. After the KO presentation pause: spectator teleport, then next turn or match completion
+	local myTurn = matchData.turnAttempt
+	task.spawn(function()
+		task.wait(Config.KnockoutDuration or 3)
+		if not MatchService.Matches[matchData.matchId] or matchData.ending then return end
+		if matchData.turnAttempt ~= myTurn then return end -- stale (match end / leaving handled it)
+		if matchData.state ~= MatchStates.States.KNOCKED_OUT then return end
+
+		-- 4. Move the eliminated player to the safe spectator area (if still in game)
+		local eliminatedPlayer = Players:GetPlayerByUserId(targetUserId)
+		if eliminatedPlayer and eliminatedPlayer.Parent then
+			teleportToSpectatorArea(eliminatedPlayer, matchData.arenaModel)
+		end
+
+		-- 5. Update active players
+		recountActivePlayers(matchData)
+		broadcastMatchState(matchData)
+
+		-- 6. >= 2 active: another living player becomes Target, next turn. 1 active: prepare match end.
+		if matchData.activePlayers >= 2 then
+			local candidates = {}
+			for userId, _ in pairs(matchData.players) do
+				table.insert(candidates, userId)
+			end
+			if #candidates == 0 then
+				MatchService.EndMatch(matchData.matchId, "No living players remain")
+				return
+			end
+			local newTargetUserId = candidates[math.random(1, #candidates)]
+			matchData.targetUserId = newTargetUserId
+			for userId, _ in pairs(matchData.players) do
+				if userId == newTargetUserId then
+					matchData.roles[userId] = "Target"
+				else
+					matchData.roles[userId] = "PotentialPuncher"
+				end
+				broadcastRoleAssigned(matchData, userId, matchData.roles[userId])
+			end
+			-- NEW Target -> fresh match health + TargetStand
+			matchData.targetHealth = Config.StartingHealth or 100
+			matchData.targetKnockedOut = false
+			local newTargetPlayer = matchData.players[newTargetUserId]
+			if newTargetPlayer and matchData.arenaModel then
+				teleportToTargetStand(newTargetPlayer, matchData.arenaModel)
+			end
+			broadcastTargetHealth(matchData, 0, "Reset")
+			print(string.format("[MatchService] New Target after KO: %d for match %s (%d active)", newTargetUserId, matchData.matchId, matchData.activePlayers))
+			startPunchSelectionWindow(matchData)
+		elseif matchData.activePlayers == 1 then
+			-- One active player remains -> prepare match completion (winner confirmed server-side)
+			local lastUserId = nil
+			for userId, _ in pairs(matchData.players) do
+				lastUserId = userId
+				break
+			end
+			MatchService.EndMatch(matchData.matchId, "Last player standing", lastUserId)
+		else
+			MatchService.EndMatch(matchData.matchId, "No active players remain")
+		end
+	end)
 end
 
 -- Schedules the visual punch sequence timing SERVER-side (prep -> punch -> contact).
@@ -1367,6 +1530,10 @@ function MatchService.CreateMatchFromQueue(slotId: string, playerUserIds: {numbe
 		guessedUserId = nil, -- the submitted guess (server-evaluated)
 		guessEndTick = nil, -- countdown deadline (timeout = incorrect)
 		guessAttempt = 0, -- increments per guess phase; stale guess loops die when it changes
+		-- KNOCKOUT / ELIMINATION & MATCH END
+		eliminatedUserIds = {}, -- [userId] = eliminationReason; eliminated players are OUT of the active set (players map) and become spectators
+		winnerUserId = nil, -- confirmed on the server when one active player remains
+		ending = false, -- match end in progress (prevents double-end and post-end actions)
 	}
 
 	for i, userId in ipairs(playerUserIds) do
@@ -1461,56 +1628,98 @@ function MatchService.CreateMatchFromQueue(slotId: string, playerUserIds: {numbe
 	return matchId
 end
 
-function MatchService.EndMatch(matchId: string, reason: string)
+local function broadcastMatchResult(matchData, matchResult: string, winnerUserId: number?, reason: string)
+	local re = remotes.MatchResult
+	if not re then return end
+	for _, player in pairs(matchData.playerInstances) do
+		if player and player.Parent then
+			re:FireClient(player, matchData.matchId, matchResult, winnerUserId, reason)
+		end
+	end
+end
+
+-- MATCH END & WINNER HANDLING (server-authoritative)
+-- The match ends when one active player remains. winnerUserId may be passed in (elimination/leaving
+-- flows) or is confirmed here from the last active player. Timers stop, actions are rejected after
+-- completion (match data removed + state checks), result is displayed, everyone returns to the
+-- lobby after Config.LobbyReturnDelay, all match data is cleaned and queue slots released.
+-- No winner rewards, DataStores, coins, shops, cosmetics, or monetization (FUTURE / out of scope).
+function MatchService.EndMatch(matchId: string, reason: string, winnerUserId: number?)
 	local matchData = MatchService.Matches[matchId]
 	if not matchData then
 		warn("[MatchService] EndMatch called for unknown matchId: " .. tostring(matchId))
 		return
 	end
+	if matchData.ending then
+		return -- match end already in progress
+	end
+	matchData.ending = true
 
-	print(string.format("[MatchService] Ending match %s reason=%s", matchId, reason))
+	print(string.format("[MatchService] Ending match %s reason=%s winner=%s", matchId, reason, tostring(winnerUserId)))
 
-	-- Cleanup puncher enforce connection
+	-- Stop timers and gameplay events (stale loops/requests die via these)
 	if matchData.puncherEnforceConn then
 		matchData.puncherEnforceConn:Disconnect()
 		matchData.puncherEnforceConn = nil
 	end
-
-	-- Cleanup active power gauge (timeout loop exits via Matches[matchId] check + resolved flag)
 	cancelPowerGauge(matchData, "Match ended: " .. reason)
-
-	-- Cleanup pending punch sequence + damage (clients also clean their visual effects on MatchEnd)
 	matchData.sequenceCancelled = true
-
-	-- Cleanup guessing phase (countdown loop exits via Matches[matchId] + attempt guards)
 	matchData.guessPhaseActive = false
 	matchData.guessAttempt = (matchData.guessAttempt or 0) + 1
 	matchData.turnAttempt = (matchData.turnAttempt or 0) + 1
 
+	-- CONFIRM THE WINNER ON THE SERVER (from the passed-in id or the last active player)
+	recountActivePlayers(matchData)
+	if winnerUserId and not matchData.players[winnerUserId] then
+		winnerUserId = nil -- passed-in winner already left; fall back to auto-detect
+	end
+	if not winnerUserId and matchData.activePlayers == 1 then
+		for uid, _ in pairs(matchData.players) do
+			winnerUserId = uid
+			break
+		end
+	end
+	if winnerUserId then
+		matchData.winnerUserId = winnerUserId
+		matchData.roles[winnerUserId] = "Winner"
+		broadcastRoleAssigned(matchData, winnerUserId, "Winner")
+		print(string.format("[MatchService] WINNER CONFIRMED for match %s: %d", matchId, winnerUserId))
+	end
+
 	matchData.state = MatchStates.States.FINISHED
 	broadcastMatchState(matchData)
-	broadcastMatchEnd(matchData, reason)
 
-	for _, player in pairs(matchData.playerInstances) do
-		if player and player.Parent then
-			teleportToLobby(player)
+	-- DISPLAY THE RESULT to participants (victory / defeat / cancelled presentation on clients)
+	local matchResult = winnerUserId and Results.MatchResults.WINNER or Results.MatchResults.CANCELLED
+	broadcastMatchResult(matchData, matchResult, winnerUserId, reason)
+
+	-- RETURN PLAYERS TO THE LOBBY AFTER A DELAY (result presentation first), then clean everything
+	task.spawn(function()
+		task.wait(Config.LobbyReturnDelay or 5)
+		-- broadcastMatchEnd: clients restore camera/visibility/effects
+		broadcastMatchEnd(matchData, reason)
+
+		for _, player in pairs(matchData.playerInstances) do
+			if player and player.Parent then
+				teleportToLobby(player)
+			end
 			MatchService.PlayersInMatch[player.UserId] = nil
 		end
-	end
 
-	if MatchService.ArenasInUse[matchData.arenaName] == matchId then
-		MatchService.ArenasInUse[matchData.arenaName] = nil
-	end
-
-	local queueServiceMod = ServerScriptService:FindFirstChild("Services") and ServerScriptService.Services:FindFirstChild("QueueService")
-	if queueServiceMod then
-		local ok, QueueService = pcall(require, queueServiceMod)
-		if ok and QueueService and QueueService.ReleaseSlot then
-			QueueService.ReleaseSlot(matchData.slotId)
+		if MatchService.ArenasInUse[matchData.arenaName] == matchId then
+			MatchService.ArenasInUse[matchData.arenaName] = nil
 		end
-	end
 
-	task.delay(1, function()
+		-- MAKE QUEUE SLOTS AVAILABLE AGAIN
+		local queueServiceMod = ServerScriptService:FindFirstChild("Services") and ServerScriptService.Services:FindFirstChild("QueueService")
+		if queueServiceMod then
+			local ok, QueueService = pcall(require, queueServiceMod)
+			if ok and QueueService and QueueService.ReleaseSlot then
+				QueueService.ReleaseSlot(matchData.slotId)
+			end
+		end
+
+		-- CLEAN ALL MATCH-SPECIFIC DATA (also prevents any further actions for this match)
 		MatchService.Matches[matchId] = nil
 		print("[MatchService] Match cleaned up: " .. matchId)
 	end)
@@ -1523,6 +1732,19 @@ function MatchService.HandlePlayerLeaving(userId: number, reason: string)
 	local matchData = MatchService.Matches[matchId]
 	if not matchData then
 		MatchService.PlayersInMatch[userId] = nil
+		return
+	end
+
+	-- MATCH END in progress: just clean this player's mappings; winner/result flow already running
+	if matchData.ending then
+		MatchService.PlayersInMatch[userId] = nil
+		matchData.players[userId] = nil
+		for i, plr in ipairs(matchData.playerInstances) do
+			if plr.UserId == userId then
+				table.remove(matchData.playerInstances, i)
+				break
+			end
+		end
 		return
 	end
 
@@ -1572,10 +1794,13 @@ function MatchService.HandlePlayerLeaving(userId: number, reason: string)
 	if matchData.punchRequests then matchData.punchRequests[userId] = nil end
 	if matchData.punchRequestCounts then matchData.punchRequestCounts[userId] = nil end
 
-	matchData.activePlayers = 0
-	for _ in pairs(matchData.players) do
-		matchData.activePlayers += 1
+	-- Eliminated/spectator bookkeeping for the leaver
+	if matchData.eliminatedUserIds[userId] then
+		matchData.eliminatedUserIds[userId] = nil
 	end
+
+	-- Active players = matchData.players (eliminated players were already removed from it)
+	recountActivePlayers(matchData)
 
 	broadcastMatchState(matchData)
 
@@ -1584,8 +1809,26 @@ function MatchService.HandlePlayerLeaving(userId: number, reason: string)
 		broadcastGuessOpen(matchData)
 	end
 
-	if matchData.activePlayers < (Config.MatchMinPlayers or 2) then
-		MatchService.EndMatch(matchId, "Not enough players - " .. reason)
+	-- MATCH END RULE: the match ends when one active player remains (winner confirmed on server)
+	if matchData.activePlayers <= 0 then
+		MatchService.EndMatch(matchId, "No active players remain - " .. reason)
+	elseif matchData.activePlayers == 1 then
+		if matchData.state == MatchStates.States.PREPARING or matchData.state == MatchStates.States.SELECTING_TARGET then
+			-- Match barely started (no real winner yet): end cancelled
+			MatchService.EndMatch(matchId, "Not enough players - " .. reason)
+		else
+			local lastUserId = nil
+			for uid, _ in pairs(matchData.players) do
+				lastUserId = uid
+				break
+			end
+			-- Winner disconnecting edge: if the LAST player is the one leaving, nobody remains
+			if lastUserId == userId then
+				MatchService.EndMatch(matchId, "No active players remain - " .. reason)
+			else
+				MatchService.EndMatch(matchId, "Last player standing - " .. reason, lastUserId)
+			end
+		end
 	else
 		if matchData.targetUserId == userId then
 			print("[MatchService] Target left, selecting new target for match " .. matchId)
@@ -1685,6 +1928,8 @@ function MatchService.Init()
 			"RE_GuessRequest",
 			"RE_GuessRejected",
 			"RE_GuessResult",
+			"RE_PlayerEliminated",
+			"RE_MatchResult",
 		})
 	end
 
@@ -1709,6 +1954,8 @@ function MatchService.Init()
 		remotes.GuessRequest = remotesFolder:FindFirstChild("RE_GuessRequest")
 		remotes.GuessRejected = remotesFolder:FindFirstChild("RE_GuessRejected")
 		remotes.GuessResult = remotesFolder:FindFirstChild("RE_GuessResult")
+		remotes.PlayerEliminated = remotesFolder:FindFirstChild("RE_PlayerEliminated")
+		remotes.MatchResult = remotesFolder:FindFirstChild("RE_MatchResult")
 	end
 
 	-- Handle PunchRequest from clients: client must send only Punch request, not winner/timestamp/damage/power/role
@@ -1773,6 +2020,9 @@ function MatchService.Init()
 						if hrp then
 							matchData.puncherPosition = hrp.CFrame
 						end
+					elseif matchData.roles[player.UserId] == "Spectator" then
+						-- Eliminated/spectator respawn: back to the safe spectator area
+						teleportToSpectatorArea(player, matchData.arenaModel)
 					else
 						local idx = 1
 						for i, p in ipairs(matchData.playerInstances) do
@@ -1802,6 +2052,9 @@ function MatchService.Init()
 						if hrp then
 							matchData.puncherPosition = hrp.CFrame
 						end
+					elseif matchData.roles[player.UserId] == "Spectator" then
+						-- Eliminated/spectator respawn: back to the safe spectator area
+						teleportToSpectatorArea(player, matchData.arenaModel)
 					else
 						local idx = 1
 						for i, p in ipairs(matchData.playerInstances) do
@@ -1814,9 +2067,10 @@ function MatchService.Init()
 		end)
 	end
 
-	print("[MatchService] Initialized - Puncher selection + power gauge + punch sequence + health + guessing/turn system ready")
+	print("[MatchService] Initialized - Puncher selection + gauge + sequence + health + guessing/turns + knockout/elimination + match end/winner ready")
 	print("[MatchService] States: Preparing, SelectingTarget, WaitingForPuncher, Punching (prep), PowerGauge, Guessing (one guess, reveal on resolve), KnockedOut (paused, marked), Eliminated, Finished")
 	print("[MatchService] Turn rules: CorrectGuess -> Puncher becomes next Target | WrongGuess/GuessTimeout -> same Target, new Punch selection")
+	print("[MatchService] Elimination: health 0 -> KO presentation -> spectator area; 1 active player remains -> match end, winner confirmed server-side")
 	print("[MatchService] Damage: Miss 0 / Weak " .. tostring(Config.Damage and Config.Damage.Weak) .. " / Normal " .. tostring(Config.Damage and Config.Damage.Normal) .. " / Strong " .. tostring(Config.Damage and Config.Damage.Strong) .. " / Perfect " .. tostring(Config.Damage and Config.Damage.Perfect) .. " (instant KO)")
 end
 

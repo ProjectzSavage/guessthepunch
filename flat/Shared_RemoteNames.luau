@@ -43,7 +43,10 @@ RemoteNames.Match = {
 	GuessRequest = "RE_GuessRequest", -- Client -> Server: Target ONLY sends (matchId, guessedUserId); server validates, one guess allowed
 	GuessRejected = "RE_GuessRejected", -- Server -> Target (matchId, reason) e.g. duplicate / invalid / too early / not Target
 	GuessResult = "RE_GuessResult", -- Server -> ALL match clients (matchId, result, guessedUserId, puncherUserId) = OFFICIAL PUNCHER REVEAL after submission or timeout; results: CorrectGuess / WrongGuess / GuessTimeout / InvalidGuess
-	-- Future: damage application to character, knockout flow, scoring (not implemented yet)
+	-- Knockout/elimination + match end (implemented in this phase)
+	PlayerEliminated = "RE_PlayerEliminated", -- Server -> ALL match clients (matchId, eliminatedUserId, reason); KO presentation + the eliminated player switches to spectator
+	MatchResult = "RE_MatchResult", -- Server -> ALL match clients (matchId, matchResult, winnerUserId, reason); matchResult: Winner / Cancelled; victory/defeat presentation
+	-- Future: damage application to character, scoring (not implemented yet)
 	DamageApplied = "RE_DamageApplied",
 	TargetEliminated = "RE_TargetEliminated",
 	CameraMode = "RE_CameraMode",

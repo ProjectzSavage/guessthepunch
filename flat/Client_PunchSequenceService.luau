@@ -85,6 +85,7 @@ local ZONE_PRESENTATION = {
 	},
 }
 
+local currentMatchId: string? = nil
 local playing = false
 local effectsFolder = nil -- client-local container for all effect instances (easy cleanup)
 local shakeBindName = "PunchSequenceCameraShake"
@@ -394,6 +395,47 @@ end
 -- SEQUENCE FLOW
 -- ============================================================================
 
+-- KNOCKOUT PRESENTATION (RE_PlayerEliminated, Server -> ALL): "K.O.!" burst at the eliminated
+-- player; if it is the LOCAL player, show "YOU ARE ELIMINATED" banner (spectator mode follows).
+local function onPlayerEliminated(matchId: string, eliminatedUserId: number, reason: string)
+	loadShared()
+	if currentMatchId and matchId ~= currentMatchId then return end
+	local eliminated = eliminatedUserId and Players:GetPlayerByUserId(eliminatedUserId) or nil
+	local char = eliminated and eliminated.Character or nil
+	local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local pos = hrp and hrp.Position or Vector3.new(0, 10, 0)
+
+	local pres = ZONE_PRESENTATION.Strong
+	spawnImpactEffect(pos, pres)
+	spawnComicBillboard(pos + Vector3.new(0, 1.5, 0), "K.O.!", Color3.fromRGB(255, 60, 60), 1.6)
+	playPlaceholderSound(pos, pres)
+	print("[PunchSequence] KNOCKOUT presentation for " .. tostring(eliminatedUserId) .. " (" .. tostring(reason) .. ")")
+
+	if eliminatedUserId and player.UserId == eliminatedUserId then
+		playScreenFlash(0.4)
+		local playerGui = player:FindFirstChildOfClass("PlayerGui")
+		if playerGui then
+			local gui = Instance.new("ScreenGui")
+			gui.Name = "PunchSequenceEliminated"
+			gui.ResetOnSpawn = false
+			gui.DisplayOrder = 63
+			gui.Parent = playerGui
+			local lbl = Instance.new("TextLabel")
+			lbl.Size = UDim2.fromScale(1, 0.1)
+			lbl.Position = UDim2.fromScale(0, 0.3)
+			lbl.BackgroundTransparency = 1
+			lbl.TextScaled = true
+			lbl.Font = Enum.Font.GothamBlack
+			lbl.Text = "K.O.! YOU ARE ELIMINATED - Spectating"
+			lbl.TextColor3 = Color3.fromRGB(255, 90, 90)
+			lbl.TextStrokeColor3 = Color3.fromRGB(20, 20, 20)
+			lbl.TextStrokeTransparency = 0
+			lbl.Parent = gui
+			Debris:AddItem(gui, 4)
+		end
+	end
+end
+
 local function cleanupEffects(reason: string)
 	stopCameraShake()
 	destroyEffectsFolder()
@@ -402,10 +444,12 @@ local function cleanupEffects(reason: string)
 end
 
 function PunchSequenceService.HandleMatchEnd()
+	currentMatchId = nil
 	cleanupEffects("match ended")
 end
 
 function PunchSequenceService.UpdateState(matchId: string?, role: string?, state: string?)
+	if matchId then currentMatchId = matchId end
 	-- If state leaves the punch flow (e.g. Puncher disconnected -> WaitingForPuncher), clean effects
 	if playing and state and state ~= "PowerGauge" and state ~= "KnockedOut" then
 		cleanupEffects("state changed to " .. tostring(state))
@@ -542,6 +586,7 @@ function PunchSequenceService.Init()
 
 	remotes.PunchSequence = remotesFolder:WaitForChild("RE_PunchSequence", 10)
 	remotes.TargetHealthUpdate = remotesFolder:FindFirstChild("RE_TargetHealthUpdate")
+	remotes.PlayerEliminated = remotesFolder:FindFirstChild("RE_PlayerEliminated")
 
 	if remotes.PunchSequence then
 		remotes.PunchSequence.OnClientEvent:Connect(function(matchId, zone, puncherUserId, targetUserId, timedOut)
@@ -550,6 +595,12 @@ function PunchSequenceService.Init()
 		print("[PunchSequenceService] Listening to RE_PunchSequence")
 	else
 		warn("[PunchSequenceService] RE_PunchSequence not found - punch sequence disabled")
+	end
+
+	if remotes.PlayerEliminated then
+		remotes.PlayerEliminated.OnClientEvent:Connect(function(matchId, eliminatedUserId, reason)
+			onPlayerEliminated(matchId, eliminatedUserId, reason)
+		end)
 	end
 
 	if remotes.TargetHealthUpdate then

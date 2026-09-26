@@ -82,9 +82,15 @@ Config.GuessRevealPause = 1.5 -- seconds pause after reveal before the next punc
 Config.GuessResultMissPause = 1.0 -- seconds pause after gauge-timeout Miss before a new punch selection starts
 
 -- ============================================================================
--- FUTURE: Knockout, Scoring (NOT implemented yet, centralized only)
+-- KNOCKOUT, ELIMINATION & MATCH END (Phase: knockout/elimination + match end/winner ONLY)
 -- ============================================================================
-Config.KnockoutDuration = 3
+Config.KnockoutDuration = 3 -- seconds of knockout presentation before spectator teleport / next turn
+Config.SpectatorAutoPlatformHeight = 25 -- Y offset above arena when auto-creating a spectator platform
+Config.SpectatorPlatformSize = 24 -- studs; auto-created spectator platform size
+-- Optional manual object per arena (Workspace.MatchArenas.ArenaX.SpectatorArea, BasePart,
+-- Anchored true, CanCollide true): if present it is used; otherwise the server AUTO-CREATES
+-- a floating platform above the arena.
+-- Config.LobbyReturnDelay (MATCH SETUP section above) controls the lobby return after match end.
 
 Config.StartingHealth = 100
 Config.Damage = {

@@ -1,0 +1,152 @@
+-- CommandBar_KnockoutMatchEnd.txt
+-- Paste into Roblox Studio Command Bar (View > Command Bar) and run ONCE.
+-- Creates objects for Knockout & Elimination + Match Ending & Winner. You then paste code from GitHub.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local StarterPlayer = game:GetService("StarterPlayer")
+
+local function ensureFolder(parent, name)
+	local f = parent:FindFirstChild(name)
+	if not f then
+		f = Instance.new("Folder")
+		f.Name = name
+		f.Parent = parent
+		print("Created Folder: " .. parent:GetFullName() .. "." .. name)
+	end
+	return f
+end
+
+local function ensureModule(parent, name)
+	local m = parent:FindFirstChild(name)
+	if not m then
+		m = Instance.new("ModuleScript")
+		m.Name = name
+		m.Parent = parent
+		print("Created ModuleScript: " .. parent:GetFullName() .. "." .. name)
+	end
+	return m
+end
+
+local function ensureRemote(parent, name)
+	local r = parent:FindFirstChild(name)
+	if not r then
+		r = Instance.new("RemoteEvent")
+		r.Name = name
+		r.Parent = parent
+		print("Created RemoteEvent: " .. parent:GetFullName() .. "." .. name)
+	end
+	return r
+end
+
+-- Shared modules (paste updated code)
+local Shared = ensureFolder(ReplicatedStorage, "Shared")
+ensureModule(Shared, "Config") -- update: knockout/spectator settings
+ensureModule(Shared, "RemoteNames") -- update: RE_PlayerEliminated + RE_MatchResult
+ensureModule(Shared, "Results") -- MatchResults/EliminationReasons used
+ensureModule(Shared, "Roles")
+ensureModule(Shared, "MatchStates")
+ensureModule(Shared, "PowerZones")
+
+-- Remotes (also auto-created by MatchService.Init)
+local Remotes = ensureFolder(ReplicatedStorage, "Remotes")
+ensureRemote(Remotes, "RE_PlayerEliminated") -- NEW
+ensureRemote(Remotes, "RE_MatchResult") -- NEW
+-- Previous phases (ensure still present)
+ensureRemote(Remotes, "RE_GuessOpen")
+ensureRemote(Remotes, "RE_GuessRequest")
+ensureRemote(Remotes, "RE_GuessRejected")
+ensureRemote(Remotes, "RE_GuessResult")
+ensureRemote(Remotes, "RE_PunchSequence")
+ensureRemote(Remotes, "RE_TargetHealthUpdate")
+ensureRemote(Remotes, "RE_PowerGaugeOpen")
+ensureRemote(Remotes, "RE_PowerGaugeStopRequest")
+ensureRemote(Remotes, "RE_PowerGaugeRejected")
+ensureRemote(Remotes, "RE_PowerGaugeResult")
+ensureRemote(Remotes, "RE_MatchStart")
+ensureRemote(Remotes, "RE_MatchStateUpdate")
+ensureRemote(Remotes, "RE_MatchEnd")
+ensureRemote(Remotes, "RE_RoleAssigned")
+ensureRemote(Remotes, "RE_TargetSelected")
+ensureRemote(Remotes, "RE_PunchRequest")
+ensureRemote(Remotes, "RE_PunchRejected")
+ensureRemote(Remotes, "RE_PuncherSelected")
+ensureRemote(Remotes, "RE_PuncherPreparation")
+ensureRemote(Remotes, "RE_QueueJoinRequest")
+ensureRemote(Remotes, "RE_QueueLeaveRequest")
+ensureRemote(Remotes, "RE_QueueStateUpdate")
+ensureRemote(Remotes, "RE_QueueCountdownUpdate")
+ensureRemote(Remotes, "RE_QueueLocked")
+ensureRemote(Remotes, "RE_QueueStarted")
+ensureRemote(Remotes, "RE_QueuePlayerLeft")
+
+-- Server services
+local Services = ensureFolder(ServerScriptService, "Services")
+ensureModule(Services, "MatchService") -- update: 2077 lines (elimination + match end/winner)
+ensureModule(Services, "RemoteService")
+ensureModule(Services, "QueueService")
+
+-- OPTIONAL per-arena SpectatorArea (server auto-creates a floating platform if missing)
+local Workspace = game:GetService("Workspace")
+local MatchArenas = Workspace:FindFirstChild("MatchArenas")
+if MatchArenas then
+	for _, arena in ipairs(MatchArenas:GetChildren()) do
+		if arena:IsA("Model") and not arena:FindFirstChild("SpectatorArea") then
+			local ok, cf = pcall(function()
+				local bcf, bsize = arena:GetBoundingBox()
+				return CFrame.new(bcf.Position + Vector3.new(0, (bsize.Y / 2) + 25, 0))
+			end)
+			if ok and cf then
+				local platform = Instance.new("Part")
+				platform.Name = "SpectatorArea"
+				platform.Anchored = true
+				platform.CanCollide = true
+				platform.Transparency = 0.4
+				platform.Material = Enum.Material.Glass
+				platform.Color = Color3.fromRGB(120, 160, 220)
+				platform.Size = Vector3.new(24, 1, 24)
+				platform.CFrame = cf
+				platform.Parent = arena
+				print("Created SpectatorArea platform in " .. arena.Name)
+			end
+		end
+	end
+else
+	warn("Workspace.MatchArenas not found - server will auto-create platforms per match")
+end
+
+-- Client
+local StarterPlayerScripts = StarterPlayer:FindFirstChild("StarterPlayerScripts")
+if not StarterPlayerScripts then
+	StarterPlayerScripts = Instance.new("StarterPlayerScripts")
+	StarterPlayerScripts.Name = "StarterPlayerScripts"
+	StarterPlayerScripts.Parent = StarterPlayer
+	print("Created StarterPlayerScripts")
+end
+local ClientRoot = StarterPlayerScripts:FindFirstChild("GuessThePuncherClient")
+if not ClientRoot then
+	ClientRoot = Instance.new("LocalScript")
+	ClientRoot.Name = "GuessThePuncherClient"
+	ClientRoot.Parent = StarterPlayerScripts
+	print("Created LocalScript: GuessThePuncherClient")
+end
+local ClientServices = ensureFolder(ClientRoot, "Services")
+ensureModule(ClientServices, "TargetCameraService")
+ensureModule(ClientServices, "TargetVisibilityService")
+ensureModule(ClientServices, "PuncherSelectionService")
+ensureModule(ClientServices, "PowerGaugeService")
+ensureModule(ClientServices, "PunchSequenceService") -- update: KO presentation
+ensureModule(ClientServices, "GuessingService")
+ensureModule(ClientServices, "MatchResultService") -- NEW
+
+print("=== Knockout/Elimination + Match End/Winner setup objects ready ===")
+print("Paste code (no .luau extension in Studio names):")
+print("1. flat/Shared_Config.luau               -> ReplicatedStorage.Shared.Config")
+print("2. flat/Shared_RemoteNames.luau          -> ReplicatedStorage.Shared.RemoteNames")
+print("3. flat/Server_MatchService.luau         -> ServerScriptService.Services.MatchService (REPLACE WHOLE)")
+print("4. flat/Client_PunchSequenceService.luau -> ...Services.PunchSequenceService (REPLACE WHOLE)")
+print("5. flat/Client_MatchResultService.luau   -> ...Services.MatchResultService (NEW)")
+print("6. flat/Client_Main.client.luau          -> StarterPlayerScripts.GuessThePuncherClient")
+print("Flow: health 0 -> K.O.! presentation (3s) -> spectator platform -> new living Target + next turn;")
+print("1 active remains -> WINNER confirmed server-side -> VICTORY/defeat banners + confetti (placeholders)")
+print("-> 5s -> lobby return, cleanup, queue slots released. No rewards/DataStores/monetization.")

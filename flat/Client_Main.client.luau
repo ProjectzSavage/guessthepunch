@@ -30,6 +30,7 @@ local PuncherSelectionService = nil
 local PowerGaugeService = nil
 local PunchSequenceService = nil
 local GuessingService = nil
+local MatchResultService = nil
 
 local function loadClientServices()
 	local servicesFolder = script:FindFirstChild("Services")
@@ -82,6 +83,11 @@ local function loadClientServices()
 		if guessMod then
 			local ok, mod = pcall(require, guessMod)
 			if ok then GuessingService = mod else warn("[Client] Failed to require GuessingService: " .. tostring(mod)) end
+		end
+		local resultMod = servicesFolder:FindFirstChild("MatchResultService")
+		if resultMod then
+			local ok, mod = pcall(require, resultMod)
+			if ok then MatchResultService = mod else warn("[Client] Failed to require MatchResultService: " .. tostring(mod)) end
 		end
 	else
 		warn("[Client] Services folder not found - create StarterPlayerScripts/GuessThePuncherClient/Services with TargetCameraService, TargetVisibilityService, PuncherSelectionService, PowerGaugeService, PunchSequenceService, GuessingService")
@@ -162,6 +168,9 @@ local function applyPuncherState()
 	if GuessingService then
 		GuessingService.UpdateState(currentMatchId, currentRole, currentState)
 	end
+	if MatchResultService then
+		MatchResultService.UpdateState(currentMatchId)
+	end
 end
 
 local function restoreAll()
@@ -172,6 +181,7 @@ local function restoreAll()
 	if PowerGaugeService then PowerGaugeService.HandleMatchEnd() end
 	if PunchSequenceService then PunchSequenceService.HandleMatchEnd() end
 	if GuessingService then GuessingService.HandleMatchEnd() end
+	if MatchResultService then MatchResultService.HandleMatchEnd() end
 	currentMatchId = nil
 	currentRole = nil
 	currentState = nil
@@ -187,6 +197,7 @@ if PuncherSelectionService and PuncherSelectionService.Init then PuncherSelectio
 if PowerGaugeService and PowerGaugeService.Init then PowerGaugeService.Init() end
 if PunchSequenceService and PunchSequenceService.Init then PunchSequenceService.Init() end
 if GuessingService and GuessingService.Init then GuessingService.Init() end
+if MatchResultService and MatchResultService.Init then MatchResultService.Init() end
 
 local remotesFolder = ReplicatedStorage:WaitForChild("Remotes", 10)
 if not remotesFolder then
@@ -309,7 +320,7 @@ Players.PlayerRemoving:Connect(function(leavingPlayer)
 	end
 end)
 
-print("[GuessThePuncherClient] Ready - Queue + Match + Target Camera/Visibility + Puncher Selection + Power Gauge + Punch Sequence/Health + Guessing/Turns")
+print("[GuessThePuncherClient] Ready - Queue + Match + Camera/Visibility + Selection + Gauge + Sequence/Health + Guessing/Turns + Knockout/Elimination + Match End/Winner")
 print("  Join queue: RE_QueueJoinRequest:FireServer('Slot2') or walk onto EntryArea")
 print("  When PotentialPuncher in WaitingForPuncher: Press F to request Punch (or RE_PunchRequest:FireServer(matchId))")
 print("  First valid server-accepted becomes Puncher, moved behind Target, preparation " .. tostring(Config and Config.PuncherPreparationTime or 3) .. "s")
